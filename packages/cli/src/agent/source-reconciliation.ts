@@ -33,16 +33,30 @@ export type ReconciliationReasonCode =
   | 'active_reference'
   | 'dirty_worktree'
   | 'ambiguous_path'
+  | 'managed_path'
+  | 'ephemeral_path'
 
 export type ReconciliationAction = 'disable' | 'remove' | 'inspect'
 export type ReconciliationRegistrationType = 'source' | 'provider'
 export type ReconciliationProposalStatus = 'pending' | 'reconciling' | 'applied' | 'blocked' | 'invalidated' | 'denied'
+export type ReconciliationOwnerDisposition = 'retained' | 'deferred'
+export type ReconciliationDispositionAction = 'retain' | 'defer' | 'clear'
+export type ReconciliationApprovalAction = Exclude<ReconciliationAction, 'inspect'> | ReconciliationDispositionAction
+
+export type ReconciliationDispositionEvent = {
+  actorId: string
+  disposition?: ReconciliationOwnerDisposition
+  at: string
+  previousDisposition?: ReconciliationOwnerDisposition
+}
 
 export type ReconciliationSafety = {
   activeRuns: string[]
   dirtyWorktree: boolean
   identityConflict: boolean
   ambiguousPath: boolean
+  managedPath: boolean
+  ephemeralPath: boolean
   blockers: string[]
 }
 
@@ -82,6 +96,10 @@ export type ReconciliationProposal = {
   updatedAt: string
   decidedAt?: string
   completedAt?: string
+  ownerDisposition?: ReconciliationOwnerDisposition
+  dispositionAt?: string
+  dispositionActorId?: string
+  dispositionHistory?: ReconciliationDispositionEvent[]
 }
 
 export type ReconciliationDetail = {
@@ -105,7 +123,21 @@ export type ReconciliationDetail = {
   confirmationRequired: true
   proposalId?: string
   proposalStatus?: ReconciliationProposalStatus
+  ownerDisposition?: ReconciliationOwnerDisposition
   ownerAuthority: string
+}
+
+export type SourceReconciliationTriageSummary = {
+  total: number
+  needsReview: number
+  actionable: number
+  blocked: number
+  missing: number
+  stale: number
+  disabled: number
+  activeReferences: number
+  retained: number
+  deferred: number
 }
 
 export type SourceReconciliationReport = {
@@ -125,6 +157,7 @@ export type SourceReconciliationReport = {
     pendingProposals: number
   }
   reasonCounts: Partial<Record<ReconciliationReasonCode, number>>
+  triage: SourceReconciliationTriageSummary
   details: ReconciliationDetail[]
   proposals: ReconciliationProposal[]
   timing: { durationMs: number; gitChecks: number; pathChecks: number; providerChecks: number }
@@ -149,7 +182,7 @@ export type SourceReconciliationOptions = {
 
 export type ReconciliationApproval = {
   proposalId: string
-  action: Exclude<ReconciliationAction, 'inspect'>
+  action: ReconciliationApprovalAction
   actorId: string
   registrationId: string
   registrationType: ReconciliationRegistrationType
@@ -182,6 +215,20 @@ const MAX_STORE_BYTES = 2 * 1024 * 1024
 const GIT_TIMEOUT_MS = 1500
 const GIT_BIN = '/usr/bin/git'
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'needs_confirmation', 'blocked'])
+const TRIAGE_REASON_ORDER: Record<ReconciliationReasonCode, number> = {
+  missing_path: 10,
+  index_stale: 20,
+  revision_mismatch: 30,
+  provenance_stale: 40,
+  source_unavailable: 50,
+  disabled: 60,
+  active_reference: 70,
+  dirty_worktree: 80,
+  identity_conflict: 90,
+  ambiguous_path: 100,
+  managed_path: 110,
+  ephemeral_path: 120
+}
 
 function nowDate(options: SourceReconciliationOptions): Date { return options.now ? options.now() : new Date() }
 function ownerAuthority(): string { return `os-user:${typeof process.getuid === 'function' ? process.getuid() : os.userInfo().username}` }
@@ -197,6 +244,10 @@ function pathState(value: string): ReconciliationProposal['observedPathState'] {
   try { return fs.statSync(expandTilde(value)).isDirectory() ? 'available' : 'not_directory' } catch { return 'missing' }
 }
 function hashPath(value: string): string { return sha(canonicalPath(value)).slice(0, 32) }
+function isEphemeralPath(value: string): boolean {
+  const normalized = path.resolve(expandTilde(value))
+  return normalized === '/tmp' || normalized.startsWith('/tmp/') || normalized === '/private/tmp' || normalized.startsWith('/private/tmp/')
+}
 function runGit(cwd: string, args: string[]): string | undefined {
   try {
     return execFileSync(GIT_BIN, ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS, shell: false, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }).trim()
@@ -288,8 +339,16 @@ function classifySource(source: KnowledgeSource, allSources: KnowledgeSource[], 
     repoGroupId: git.repoGroupId || source.repoGroupId
   }
 
+  const managedPath = source.isManagedWorktree === true
+  const ephemeralPath = isEphemeralPath(source.path)
   if (!source.enabled) {
     classification = 'disabled'; reasonCode = 'disabled'; reason = 'Source registration is explicitly disabled.'
+  } else if (ephemeralPath) {
+    classification = state === 'available' ? 'stale' : 'missing'; reasonCode = 'ephemeral_path'; reason = 'Source path is ephemeral and cannot be safely reconciled automatically.'
+    blockers.push('ephemeral_path')
+  } else if (managedPath && state !== 'available') {
+    classification = 'missing'; reasonCode = 'managed_path'; reason = 'Managed worktree path is unavailable; ownership must be reviewed explicitly.'
+    blockers.push('managed_path')
   } else if (state !== 'available') {
     classification = 'missing'; reasonCode = state === 'not_directory' ? 'source_unavailable' : 'missing_path'; reason = state === 'not_directory' ? 'Configured source path is not a directory.' : 'Configured source path is missing.'
   } else if (samePath.length > 0) {
@@ -313,6 +372,7 @@ function classifySource(source: KnowledgeSource, allSources: KnowledgeSource[], 
     blockers.push('active_reference')
     if (classification === 'missing' || classification === 'stale') reasonCode = 'active_reference'
   }
+  if (managedPath && classification !== 'healthy' && !blockers.includes('managed_path')) blockers.push('managed_path')
   const allowedActions: ReconciliationAction[] = classification === 'missing' && blockers.length === 0 ? ['disable', 'remove'] : []
   const requestedAction: ReconciliationAction = allowedActions[0] || 'inspect'
   return {
@@ -330,7 +390,7 @@ function classifySource(source: KnowledgeSource, allSources: KnowledgeSource[], 
     indexedRevision: record?.sourceRevision,
     indexStatus: record?.indexStatus,
     provenance,
-    safety: { activeRuns: activeRunsForSource, dirtyWorktree: git.dirty || false, identityConflict: blockers.includes('identity_conflict'), ambiguousPath: blockers.includes('ambiguous_path'), blockers },
+    safety: { activeRuns: activeRunsForSource, dirtyWorktree: git.dirty || false, identityConflict: blockers.includes('identity_conflict'), ambiguousPath: blockers.includes('ambiguous_path'), managedPath, ephemeralPath, blockers },
     requestedAction,
     allowedActions,
     confirmationRequired: true,
@@ -369,7 +429,7 @@ function classifyProvider(provider: ProviderInventoryRecord, activeIds: Set<stri
     activeSelectionExcluded: !active || classification !== 'healthy',
     observedPathState: state,
     provenance: { indexedPathIdentity: undefined },
-    safety: { activeRuns: [], dirtyWorktree: false, identityConflict: false, ambiguousPath: false, blockers },
+    safety: { activeRuns: [], dirtyWorktree: false, identityConflict: false, ambiguousPath: false, managedPath: false, ephemeralPath: isEphemeralPath(provider.location.value), blockers },
     requestedAction: allowedActions[0] || 'inspect',
     allowedActions,
     confirmationRequired: true,
@@ -415,6 +475,33 @@ function proposalFor(observation: Observation, timestamp: string, existing: Reco
   }
 }
 
+function proposalNeedsReview(proposal: ReconciliationProposal): boolean {
+  return proposal.status !== 'applied' && !proposal.ownerDisposition
+}
+
+function proposalIsActionable(proposal: ReconciliationProposal): boolean {
+  return proposal.allowedActions.length > 0 && proposal.safety.blockers.length === 0 && proposal.status === 'pending'
+}
+
+function isDispositionAction(action: ReconciliationApprovalAction): action is ReconciliationDispositionAction {
+  return action === 'retain' || action === 'defer' || action === 'clear'
+}
+
+function compareProposals(a: ReconciliationProposal, b: ReconciliationProposal): number {
+  const aDisposition = a.ownerDisposition ? 1 : 0
+  const bDisposition = b.ownerDisposition ? 1 : 0
+  const aActionable = proposalIsActionable(a) ? 0 : 1
+  const bActionable = proposalIsActionable(b) ? 0 : 1
+  const aReason = TRIAGE_REASON_ORDER[a.reasonCode] ?? Number.MAX_SAFE_INTEGER
+  const bReason = TRIAGE_REASON_ORDER[b.reasonCode] ?? Number.MAX_SAFE_INTEGER
+  return aDisposition - bDisposition
+    || aActionable - bActionable
+    || aReason - bReason
+    || a.registrationType.localeCompare(b.registrationType)
+    || a.registrationId.localeCompare(b.registrationId)
+    || a.proposalId.localeCompare(b.proposalId)
+}
+
 export function scanSourceReconciliation(options: SourceReconciliationOptions = {}): SourceReconciliationReport {
   const started = Date.now()
   const timestamp = nowDate(options).toISOString()
@@ -430,11 +517,12 @@ export function scanSourceReconciliation(options: SourceReconciliationOptions = 
     ...sources.map(source => classifySource(source, sources, sourceActiveIds, runs, options)),
     ...providers.map(provider => classifyProvider(provider, providerActiveIds, options))
   ].sort((a, b) => `${a.registrationType}:${a.registrationId}`.localeCompare(`${b.registrationType}:${b.registrationId}`))
-  const proposals = observations.map(observation => proposalFor(observation, timestamp, store.proposals)).filter((item): item is ReconciliationProposal => Boolean(item)).slice(0, maxProposals)
+  const allProposals = observations.map(observation => proposalFor(observation, timestamp, store.proposals)).filter((item): item is ReconciliationProposal => Boolean(item)).sort(compareProposals)
+  const proposals = allProposals.slice(0, maxProposals)
   const proposalById = new Map(proposals.map(proposal => [proposal.proposalId, proposal]))
   const details = observations.slice(0, maxDetails).map(observation => {
     const proposal = proposalById.get(proposalFor(observation, timestamp, store.proposals)?.proposalId || '')
-    return { ...observation, ...(proposal ? { proposalId: proposal.proposalId, proposalStatus: proposal.status } : {}) }
+    return { ...observation, ...(proposal ? { proposalId: proposal.proposalId, proposalStatus: proposal.status, ...(proposal.ownerDisposition ? { ownerDisposition: proposal.ownerDisposition } : {}) } : {}) }
   })
   if (options.persist !== false && proposals.length > 0) {
     const proposalIds = new Set(proposals.map(proposal => proposal.proposalId))
@@ -447,14 +535,28 @@ export function scanSourceReconciliation(options: SourceReconciliationOptions = 
     if (observation.safety.blockers.length > 0) acc.blocked += 1
     return acc
   }, { total: 0, healthy: 0, stale: 0, missing: 0, disabled: 0, reconciling: 0, removed: 0, actionable: 0, blocked: 0, pendingProposals: 0 })
-  summary.pendingProposals = Array.from(new Map([...store.proposals, ...proposals].map(proposal => [proposal.proposalId, proposal])).values()).filter(proposal => proposal.status === 'pending').length
+  const currentProposalById = new Map(allProposals.map(proposal => [proposal.proposalId, proposal]))
+  summary.pendingProposals = Array.from(new Map([...store.proposals, ...allProposals].map(proposal => [proposal.proposalId, proposal])).values()).filter(proposal => proposal.status === 'pending').length
+  const currentProposals = Array.from(currentProposalById.values())
+  const triage: SourceReconciliationTriageSummary = {
+    total: observations.filter(observation => observation.classification !== 'healthy').length,
+    needsReview: currentProposals.filter(proposalNeedsReview).length,
+    actionable: currentProposals.filter(proposalIsActionable).length,
+    blocked: currentProposals.filter(proposal => proposal.safety.blockers.length > 0 || proposal.status === 'blocked').length,
+    missing: observations.filter(observation => observation.classification === 'missing').length,
+    stale: observations.filter(observation => observation.classification === 'stale').length,
+    disabled: observations.filter(observation => observation.classification === 'disabled').length,
+    activeReferences: observations.filter(observation => observation.safety.blockers.includes('active_reference')).length,
+    retained: currentProposals.filter(proposal => proposal.ownerDisposition === 'retained').length,
+    deferred: currentProposals.filter(proposal => proposal.ownerDisposition === 'deferred').length
+  }
   const reasonCounts: Partial<Record<ReconciliationReasonCode, number>> = {}
   for (const observation of observations) reasonCounts[observation.reasonCode] = (reasonCounts[observation.reasonCode] || 0) + 1
   return {
     schemaVersion: SOURCE_RECONCILIATION_SCHEMA_VERSION,
     generatedAt: timestamp,
     bounded: { maxDetails, maxProposals, fullIndexingTriggered: false },
-    summary, reasonCounts,
+    summary, reasonCounts, triage,
     details, proposals,
     timing: { durationMs: Date.now() - started, gitChecks: sources.filter(source => source.enabled && pathState(source.path) === 'available').length, pathChecks: sources.length + providers.filter(provider => provider.location.kind === 'local-path').length, providerChecks: providers.length }
   }
@@ -475,17 +577,30 @@ export function applyReconciliationApproval(approval: ReconciliationApproval, op
   const store = readStore(options)
   const proposal = store.proposals.find(item => item.proposalId === approval.proposalId)
   if (!proposal) return { ok: false, code: 'not_found', message: 'Reconciliation proposal was not found.', mutated: false }
-  if (proposal.status === 'applied') return { ok: true, code: 'already_reconciled', message: 'Reconciliation was already applied; no mutation was repeated.', proposal, mutated: false }
-  if (proposal.status !== 'pending') return { ok: false, code: 'invalid_proposal', message: `Reconciliation proposal is ${proposal.status}, not pending.`, proposal, mutated: false }
-  if (approval.action !== proposal.requestedAction || approval.registrationId !== proposal.registrationId || approval.registrationType !== proposal.registrationType || canonicalPath(approval.canonicalPath) !== proposal.canonicalPath || approval.classification !== proposal.classification || approval.reasonCode !== proposal.reasonCode || !proposal.allowedActions.includes(approval.action)) {
+  const isDisposition = isDispositionAction(approval.action)
+  if (!isDisposition && proposal.status === 'applied') return { ok: true, code: 'already_reconciled', message: 'Reconciliation was already applied; no mutation was repeated.', proposal, mutated: false }
+  if (isDisposition && proposal.status === 'applied') return { ok: false, code: 'invalid_proposal', message: 'An applied reconciliation is no longer available for triage.', proposal, mutated: false }
+  if (!isDisposition && proposal.status !== 'pending') return { ok: false, code: 'invalid_proposal', message: `Reconciliation proposal is ${proposal.status}, not pending.`, proposal, mutated: false }
+  if ((!isDisposition && (approval.action !== proposal.requestedAction || !proposal.allowedActions.includes(approval.action))) || approval.registrationId !== proposal.registrationId || approval.registrationType !== proposal.registrationType || canonicalPath(approval.canonicalPath) !== proposal.canonicalPath || approval.classification !== proposal.classification || approval.reasonCode !== proposal.reasonCode) {
     const invalidated = updateProposal(options, { ...proposal, status: 'invalidated', decidedAt: nowDate(options).toISOString() }, nowDate(options).toISOString())
     return { ok: false, code: 'approval_mismatch', message: 'Approval did not exactly match the stored registration, path, classification, reason, or action.', proposal: invalidated, mutated: false }
   }
   const current = scanSourceReconciliation({ ...options, persist: false, maxDetails: 256, maxProposals: 256 })
   const detail = current.details.find(item => item.registrationType === proposal.registrationType && item.registrationId === proposal.registrationId)
-  if (!detail || detail.canonicalPath !== proposal.canonicalPath || detail.classification !== proposal.classification || detail.reasonCode !== proposal.reasonCode || detail.safety.blockers.length > 0 || !detail.allowedActions.includes(approval.action)) {
-    const blocked = updateProposal(options, { ...proposal, status: 'blocked', decidedAt: nowDate(options).toISOString(), reason: detail?.safety.blockers.join(', ') || 'Registration changed since proposal creation.' }, nowDate(options).toISOString())
-    return { ok: false, code: 'blocked', message: blocked.reason, proposal: blocked, mutated: false }
+  if (!detail || detail.canonicalPath !== proposal.canonicalPath || detail.classification !== proposal.classification || detail.reasonCode !== proposal.reasonCode || (isDisposition ? false : detail.safety.blockers.length > 0 || !detail.allowedActions.includes(approval.action as Exclude<ReconciliationAction, 'inspect'>))) {
+    const changed = updateProposal(options, { ...proposal, ...(isDisposition ? { status: 'invalidated' as const } : { status: 'blocked' as const }), decidedAt: nowDate(options).toISOString(), reason: detail?.safety.blockers.join(', ') || 'Registration changed since proposal creation.' }, nowDate(options).toISOString())
+    return { ok: false, code: isDisposition ? 'invalid_proposal' : 'blocked', message: isDisposition ? 'State changed — review the updated proposal.' : changed.reason, proposal: changed, mutated: false }
+  }
+  if (isDisposition) {
+    const timestamp = nowDate(options).toISOString()
+    const nextDisposition: ReconciliationOwnerDisposition | undefined = approval.action === 'retain' ? 'retained' : approval.action === 'defer' ? 'deferred' : undefined
+    const event: ReconciliationDispositionEvent = { actorId: approval.actorId, ...(nextDisposition ? { disposition: nextDisposition } : {}), at: timestamp, ...(proposal.ownerDisposition ? { previousDisposition: proposal.ownerDisposition } : {}) }
+    const updated = updateProposal(options, {
+      ...proposal,
+      ...(nextDisposition ? { ownerDisposition: nextDisposition, dispositionAt: timestamp, dispositionActorId: approval.actorId } : { ownerDisposition: undefined, dispositionAt: undefined, dispositionActorId: undefined }),
+      dispositionHistory: [...(proposal.dispositionHistory || []), event].slice(-8)
+    }, timestamp)
+    return { ok: true, code: 'applied', message: nextDisposition ? `Recorded owner disposition ${nextDisposition} for ${proposal.registrationType} ${proposal.registrationId}.` : `Reopened owner review for ${proposal.registrationType} ${proposal.registrationId}.`, proposal: updated, mutated: true }
   }
   const reconciling = updateProposal(options, { ...proposal, status: 'reconciling', decidedAt: nowDate(options).toISOString() }, nowDate(options).toISOString())
   try {

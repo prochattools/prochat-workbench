@@ -14,6 +14,8 @@ Allowed in this repo:
 - bounded source/provider health diagnostics
 - exact owner-approved reconciliation proposals for stale or missing local
   registrations; no automatic cleanup
+- exact reviewed-set recovery for already-reviewed safe registrations; each
+  registration is independently revalidated before any state change
 - dashboard active source context
 - explicit `sourceId` Custom GPT actions
 - safe local write policy

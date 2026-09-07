@@ -11,7 +11,8 @@ import {
   startSourceReindex,
   SourceManagementError
 } from './source-management'
-import { applyReconciliationApproval, resolveReconciliationOwnerAuthority, type ReconciliationAction, type ReconciliationClassification, type ReconciliationReasonCode, type ReconciliationRegistrationType } from './source-reconciliation'
+import { applyReconciliationApproval, resolveReconciliationOwnerAuthority, type ReconciliationAction, type ReconciliationApprovalAction, type ReconciliationClassification, type ReconciliationReasonCode, type ReconciliationRegistrationType } from './source-reconciliation'
+import { approveSourceRecoveryManifest, createSourceRecoveryManifest, executeSourceRecoveryManifest, getSourceRecoveryManifest } from './source-recovery-manifest'
 import { setSourceDiscoverySettings, discoverRepositories } from './config'
 import type { PortableOperationHandlers } from '../../../../apps/web/src/lib/actions/portable-operation-dispatcher'
 import { PortableOperationError } from './portable-operation-errors'
@@ -28,9 +29,9 @@ function requireString(payload: Payload, key: string): string {
   return v
 }
 
-function requireAction(value: unknown): Exclude<ReconciliationAction, 'inspect'> {
-  if (value === 'disable' || value === 'remove') return value
-  throw new PortableOperationError('invalid_request', 'action must be disable or remove')
+function requireAction(value: unknown): ReconciliationApprovalAction {
+  if (value === 'disable' || value === 'remove' || value === 'retain' || value === 'defer' || value === 'clear') return value
+  throw new PortableOperationError('invalid_request', 'action must be disable, remove, retain, defer, or clear')
 }
 
 function requireRegistrationType(value: unknown): ReconciliationRegistrationType {
@@ -52,6 +53,24 @@ function toPortableError(err: unknown): never {
 
 export function createSourceManagementHandlers(): PortableOperationHandlers {
   return {
+    createSourceRecoveryManifest: payload => {
+      const p = payload as Payload
+      if (!Array.isArray(p.selections)) throw new PortableOperationError('invalid_request', 'selections must be an exact array of reviewed proposals')
+      return createSourceRecoveryManifest({ selections: p.selections, actorId: resolveReconciliationOwnerAuthority() })
+    },
+    getSourceRecoveryManifest: payload => {
+      const p = payload as Payload
+      return getSourceRecoveryManifest(requireString(p, 'manifestId'))
+    },
+    approveSourceRecoveryManifest: payload => {
+      const p = payload as Payload
+      if (p.ownerConfirmed !== true) throw new PortableOperationError('invalid_request', 'ownerConfirmed must be true')
+      return approveSourceRecoveryManifest({ manifestId: requireString(p, 'manifestId'), digest: requireString(p, 'digest'), ownerConfirmed: true, actorId: resolveReconciliationOwnerAuthority() })
+    },
+    executeSourceRecoveryManifest: async payload => {
+      const p = payload as Payload
+      return executeSourceRecoveryManifest({ manifestId: requireString(p, 'manifestId'), digest: requireString(p, 'digest'), actorId: resolveReconciliationOwnerAuthority() })
+    },
     approveSourceReconciliation: payload => {
       const p = payload as Payload
       const action = requireAction(p.action)

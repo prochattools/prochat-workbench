@@ -64,6 +64,7 @@ export type KnowledgeSource = {
   branchName?: string
   availableBranches?: string[]
   isGitWorktree?: boolean
+  isManagedWorktree?: boolean
   active?: boolean
   indexed?: boolean
   indexStatus?: 'ready' | 'pending' | 'indexing' | 'failed' | 'disabled' | 'unknown'

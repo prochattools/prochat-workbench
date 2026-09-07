@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "ed816fbc5f5f2e7a8aa751676f16566d372c0594",
+  "sourceCommit": "bd70892820b2fbdc17f0d7db24e0123adf5336a0",
   "files": [
     {
       "path": ".gitignore",
@@ -40,12 +40,12 @@
     {
       "path": "PUBLIC-SOURCE.json",
       "bytes": 323,
-      "sha256": "04315fb19beb6d49f0c1e2f9bc9a10adda48395bdb06e7f76b081d5e09f91907"
+      "sha256": "a2dab87b7697ac786fe7e02bfb226738cf46db0c48b79ed4b4582ab4d4f9573b"
     },
     {
       "path": "README.md",
-      "bytes": 26555,
-      "sha256": "5891bc31f81c1db6e0214cdf5eff9198e2f4b05a65473689abf8527a7b3e8988"
+      "bytes": 26687,
+      "sha256": "35f5743b756f1b7def6026380fd5cf5a2175fc174b6b078381104f71cc25f1ec"
     },
     {
       "path": "SECURITY.md",
@@ -70,7 +70,7 @@
     {
       "path": "apps/web/package.json",
       "bytes": 1024,
-      "sha256": "c8f07ff97bb0aeecbb7d4cb4aade57dd4dca8d9f928561c71722f193ef66215d"
+      "sha256": "fc4ec9786ebd6632fc5c5ddfb68b1c3d783cfb8e57b7158bdaa1e88eae32fddf"
     },
     {
       "path": "apps/web/postcss.config.js",
@@ -634,8 +634,8 @@
     },
     {
       "path": "apps/web/src/lib/actions/portable-operation-contract.ts",
-      "bytes": 3151,
-      "sha256": "9f1f1371864de0ccac4a20dd9161bbe8f148388eb8905834ad9cb75235da52f5"
+      "bytes": 3605,
+      "sha256": "e3899b637b784105cc4012198c6cb2f97a16553914457f58a4794e7f5c0d5b30"
     },
     {
       "path": "apps/web/src/lib/actions/portable-operation-dispatcher.ts",
@@ -759,8 +759,8 @@
     },
     {
       "path": "docs/product/README.md",
-      "bytes": 1655,
-      "sha256": "4a46d0b51597b65faeff4e94d329de6463055337b346939f4137c5661c4257ca"
+      "bytes": 1683,
+      "sha256": "ea375f00ea6fcfb6cbd80a78933d2082d69602bf05641300968c9bedaf5075da"
     },
     {
       "path": "docs/product/agent-mode.md",
@@ -769,23 +769,23 @@
     },
     {
       "path": "docs/product/chatgpt-first-workflow.md",
-      "bytes": 7567,
-      "sha256": "7ab4dd494470e0429bb34b886da56091d28ad83582b477aea5447baf983f1144"
+      "bytes": 7700,
+      "sha256": "42e5e2ff783d08e2bb64bc5c6812d091be82b74428a88d3f52e1d6c0860e56b4"
     },
     {
       "path": "docs/product/local/feature-scope.md",
-      "bytes": 1338,
-      "sha256": "aaea6d15937b6428f7768cca8a1902e906e4d3250fae3cd55c76c20b2a898550"
+      "bytes": 1475,
+      "sha256": "411cd00d74b51530ac35078957876b73173a9d0799b89ac1eca0e39d3a177357"
     },
     {
       "path": "docs/product/public-scope.md",
-      "bytes": 1506,
-      "sha256": "09254daf7e65a934fc6f6487e3259c704c0fe0d61148c32999a2e0a13c3509bb"
+      "bytes": 1650,
+      "sha256": "1d0758e5d2b7a65715edacfc58d447aa85159d279ed1e39213ba453c21750aa0"
     },
     {
       "path": "package.json",
       "bytes": 5927,
-      "sha256": "86676f27dfc7b270725dcf5a6f3233f1b1300e086704bf545f9387e18f206425"
+      "sha256": "ce044c3b1ef74113015dcf8c79cc5f8b5828df564c5094a9da56becddb528ff2"
     },
     {
       "path": "packages/bridge/device-client.js",
@@ -865,7 +865,7 @@
     {
       "path": "packages/cli/package.json",
       "bytes": 1031,
-      "sha256": "7b5b64479e52674ec870ad1eb75420a28dbb5b1bb531c8517b33cf5b5bc14b22"
+      "sha256": "038ec6f1f7cab53d6bb6b286e143cc93593a3eddc53ffc3bfd4278b042f34a6e"
     },
     {
       "path": "packages/cli/src/agent/action-round-trip-artifact.ts",
@@ -1439,8 +1439,8 @@
     },
     {
       "path": "packages/cli/src/agent/source-management-handlers.ts",
-      "bytes": 7365,
-      "sha256": "6355472b0f1a79b0b35f8d6a51f123704d7fc9d7869958b3dd0dcc644e826664"
+      "bytes": 8833,
+      "sha256": "5f4a73ca175830a20a41b4ef24e31241cc36353c43af47c20be121e243ca1840"
     },
     {
       "path": "packages/cli/src/agent/source-management.ts",
@@ -1449,8 +1449,13 @@
     },
     {
       "path": "packages/cli/src/agent/source-reconciliation.ts",
-      "bytes": 29599,
-      "sha256": "bb40ba2490df4b6e92145104d5c2a27981d6b36c2b2f7b9988a1ac622f7f8a93"
+      "bytes": 36388,
+      "sha256": "27aaec1b04ed204d524a3e574ecb6a58d9e5d31fda2d6e4e4f9de482bfe0f309"
+    },
+    {
+      "path": "packages/cli/src/agent/source-recovery-manifest.ts",
+      "bytes": 32062,
+      "sha256": "457a779be0ef4449f088deb8d570ec5e992166f703bf9385d6426bb594dcdd34"
     },
     {
       "path": "packages/cli/src/agent/telemetry-store.ts",
@@ -1770,7 +1775,7 @@
     {
       "path": "packages/mcp/package.json",
       "bytes": 11214,
-      "sha256": "a43d7c26dbf62c226878334de8d183181ef20263248e337031642fadb571d0b9"
+      "sha256": "3e9f9b9a1ac3fbcf408e7d14b5d9581caf0ab26a356f8845c6aaa9caed77e7e8"
     },
     {
       "path": "packages/mcp/src/adapter-contract.ts",
@@ -1824,8 +1829,8 @@
     },
     {
       "path": "packages/mcp/src/capability-isolated-output-cli.ts",
-      "bytes": 13787,
-      "sha256": "0c802f67cc4b27d5ad0f5144997e32439909927f633b5af31e2586e54939d856"
+      "bytes": 13733,
+      "sha256": "85ee8ceb909680c6fe650a5abf79e20fea23b283c58783ebfb080f326e64579b"
     },
     {
       "path": "packages/mcp/src/capability-output-artifact.ts",
@@ -2135,7 +2140,7 @@
     {
       "path": "packages/mcp/src/mcp-server.ts",
       "bytes": 22287,
-      "sha256": "cede6b8b2313330f835ee385b207e35d4e83a754afe4b22c62f4668df9901cb7"
+      "sha256": "73956e9980a3a4b9502cbc79fd384118f24bd5c00e1a50b6aa08873419497f13"
     },
     {
       "path": "packages/mcp/src/provider-activation.ts",
@@ -2664,8 +2669,8 @@
     },
     {
       "path": "packages/shared/src/types.ts",
-      "bytes": 4042,
-      "sha256": "cf2f5bb7c29928e6756a03ab4759b76c0f752b9ef6057ebf29d129393ab678bc"
+      "bytes": 4072,
+      "sha256": "fc9c09b8aa4c16cbae4bb28fa63f43f7536b01d6cdc685a753bdc1192e720a3b"
     },
     {
       "path": "packages/shared/src/workbench-activity-ledger.ts",

@@ -86,7 +86,7 @@ const MINIMAL_NODE_ENV: NodeJS.ProcessEnv = Object.freeze({
 })
 
 function nodeCandidates(): readonly string[] {
-  return [process.execPath, '/Users/Office/.nvm/versions/node/v20.20.2/bin/node', '/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']
+  return [process.execPath, '/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']
 }
 
 function resolveNodeExecutable(): string {

@@ -8,6 +8,8 @@ Current and planned Workbench Local features:
 - bounded source/provider health diagnostics
 - owner-approved reconciliation proposals with fail-closed handling for
   ambiguous, active, dirty, and managed registrations
+- exact reviewed-set recovery with one approval, per-registration revalidation,
+  safe stale-item skipping, and explicit partial results
 - dashboard active context
 - explicit-source Custom GPT actions
 - strict source locking with placeholder-source rejection

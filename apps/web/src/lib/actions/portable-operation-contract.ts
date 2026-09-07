@@ -20,7 +20,11 @@ export const WORKBENCH_PRIVATE_OPERATION_IDS = {
   discoverRepositories: 'discoverRepositories',
   setSourceDiscoverySettings: 'setSourceDiscoverySettings',
   getSourceHealth: 'getSourceHealth',
-  approveSourceReconciliation: 'approveSourceReconciliation'
+  approveSourceReconciliation: 'approveSourceReconciliation',
+  createSourceRecoveryManifest: 'createSourceRecoveryManifest',
+  getSourceRecoveryManifest: 'getSourceRecoveryManifest',
+  approveSourceRecoveryManifest: 'approveSourceRecoveryManifest',
+  executeSourceRecoveryManifest: 'executeSourceRecoveryManifest'
 } as const
 
 export type WorkbenchOperationId =
@@ -47,7 +51,11 @@ export const WORKBENCH_OPERATION_MUTATION_CLASS: Record<WorkbenchOperationId, Wo
   discoverRepositories: 'read_only',
   setSourceDiscoverySettings: 'mutation_capable',
   getSourceHealth: 'read_only',
-  approveSourceReconciliation: 'mutation_capable'
+  approveSourceReconciliation: 'mutation_capable',
+  createSourceRecoveryManifest: 'mutation_capable',
+  getSourceRecoveryManifest: 'read_only',
+  approveSourceRecoveryManifest: 'mutation_capable',
+  executeSourceRecoveryManifest: 'mutation_capable'
 }
 
 export interface WorkbenchOperationRequest<TPayload = unknown> {

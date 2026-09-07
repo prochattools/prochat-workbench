@@ -13,6 +13,8 @@ Workbench Local already provides:
 - source management
 - local indexing and search
 - bounded source/provider health diagnostics and owner-approved reconciliation
+- exact reviewed-set recovery for already-reviewed safe registrations, with
+  independent revalidation and explicit partial outcomes
 - dashboard active source context
 - branch-aware grouping for configured Git checkouts/worktrees
 - safe write modes

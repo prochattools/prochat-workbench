@@ -126,6 +126,8 @@ Workbench supports:
 - bounded source/provider health diagnostics through `workbench doctor`
 - owner-approved reconciliation proposals for stale or missing registrations;
   ambiguous, active, dirty, and managed cases remain blocked
+- exact reviewed-set recovery for already-reviewed safe registrations, with
+  independent revalidation and explicit partial results
 
 Every repo action carries an explicit source lock. Start with `getWorkbenchStatus?include=sources`, then reuse one exact enabled `sourceId` for the conversation. The placeholders `default`, `workspace`, `current`, and `repo` are rejected; Workbench never maps them to an implicit or environment-specific source.
 
