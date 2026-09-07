@@ -419,6 +419,13 @@ The Action Token remains owner-local and the public Custom GPT endpoint remains
 the HTTPS service; the macOS application supplies the local connected-source
 runtime but is not itself the Custom GPT server.
 
+When running the native helper transport, use Settings → Installation &
+Updates to review a prepared `workbench-macos-release.json` manifest. The GUI
+shows the installed and candidate version/revision, requires one explicit
+approval, and delegates staging, promotion, restart, health verification, and
+rollback to the installed `workbenchctl` lifecycle controller. It does not
+auto-update, copy bundles, edit release state, or hide restart/recovery.
+
 For local operator inspection, the native GUI is the primary surface. The
 native ingress is:
 

@@ -63,7 +63,7 @@ export function createWorkbenchMcpServer(params: { repoRoot: string; invoke?: In
   const runWorkbenchCommandDiscoverySchema = runWorkbenchCommandAdmitted
     ? buildRunWorkbenchCommandDiscoverySchema(scope.commandKinds, scope.validationKinds)
     : undefined
-  const server = new Server({ name: 'workbench', version: '1.3.15-beta' }, {
+  const server = new Server({ name: 'workbench', version: '1.3.16-beta' }, {
     capabilities: { tools: {} },
     instructions: 'Use only the admitted bounded Workbench actions. Workbench remains authoritative for source selection, policy, confirmation, grants, dispatch, audit, and execution. Never retry mutation-capable calls after ambiguous transport results.'
   })

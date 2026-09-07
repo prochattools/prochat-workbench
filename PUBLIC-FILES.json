@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "bd70892820b2fbdc17f0d7db24e0123adf5336a0",
+  "sourceCommit": "c2ebb45d48f22b1aecf4aa264bc32cec401f2cd9",
   "files": [
     {
       "path": ".gitignore",
@@ -40,12 +40,12 @@
     {
       "path": "PUBLIC-SOURCE.json",
       "bytes": 323,
-      "sha256": "a2dab87b7697ac786fe7e02bfb226738cf46db0c48b79ed4b4582ab4d4f9573b"
+      "sha256": "af24b73ea6310641344a06f1251dde5dca2dd66a6738c1488bc23b301aa07c94"
     },
     {
       "path": "README.md",
-      "bytes": 26687,
-      "sha256": "35f5743b756f1b7def6026380fd5cf5a2175fc174b6b078381104f71cc25f1ec"
+      "bytes": 27140,
+      "sha256": "5c59dad623f861093e86a0361701fc965ea5daf2f1750813fd6921c167329e30"
     },
     {
       "path": "SECURITY.md",
@@ -70,7 +70,7 @@
     {
       "path": "apps/web/package.json",
       "bytes": 1024,
-      "sha256": "fc4ec9786ebd6632fc5c5ddfb68b1c3d783cfb8e57b7158bdaa1e88eae32fddf"
+      "sha256": "5786ab30ab128ebc00a495043841653d2ed0131cb23648aec1590fe14546286a"
     },
     {
       "path": "apps/web/postcss.config.js",
@@ -774,8 +774,8 @@
     },
     {
       "path": "docs/product/local/feature-scope.md",
-      "bytes": 1475,
-      "sha256": "411cd00d74b51530ac35078957876b73173a9d0799b89ac1eca0e39d3a177357"
+      "bytes": 1616,
+      "sha256": "5959145021e0b47dfd35d6991b1b6b86f853d236c7d0f97f86fe84b039fc4844"
     },
     {
       "path": "docs/product/public-scope.md",
@@ -785,7 +785,7 @@
     {
       "path": "package.json",
       "bytes": 5927,
-      "sha256": "ce044c3b1ef74113015dcf8c79cc5f8b5828df564c5094a9da56becddb528ff2"
+      "sha256": "aced300f6b729f9ae3cceaaadacf3b280b1a3f7225d2c8a7d254c2c8744c4550"
     },
     {
       "path": "packages/bridge/device-client.js",
@@ -865,7 +865,7 @@
     {
       "path": "packages/cli/package.json",
       "bytes": 1031,
-      "sha256": "038ec6f1f7cab53d6bb6b286e143cc93593a3eddc53ffc3bfd4278b042f34a6e"
+      "sha256": "04498748ec166591d7d30dd2b337bdc7f9064ccd286b52d16acd562f49389087"
     },
     {
       "path": "packages/cli/src/agent/action-round-trip-artifact.ts",
@@ -1775,7 +1775,7 @@
     {
       "path": "packages/mcp/package.json",
       "bytes": 11214,
-      "sha256": "3e9f9b9a1ac3fbcf408e7d14b5d9581caf0ab26a356f8845c6aaa9caed77e7e8"
+      "sha256": "1a98c2c2e1eb2f3b2c4bfa21a6c6342a3e59566c43e9b43952b1a60de79e02c2"
     },
     {
       "path": "packages/mcp/src/adapter-contract.ts",
@@ -2140,7 +2140,7 @@
     {
       "path": "packages/mcp/src/mcp-server.ts",
       "bytes": 22287,
-      "sha256": "73956e9980a3a4b9502cbc79fd384118f24bd5c00e1a50b6aa08873419497f13"
+      "sha256": "4b3caebdf4a8b3d42706a59982bd4370d9982d404c894224b262219c7d8c1a4b"
     },
     {
       "path": "packages/mcp/src/provider-activation.ts",

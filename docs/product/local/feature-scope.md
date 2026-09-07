@@ -29,6 +29,8 @@ Current and planned Workbench Local features:
 - Custom GPT and OpenAPI setup with a user-owned endpoint
 - verification and test scripts
 - local onboarding
+- native Settings installation/update UX with explicit approval and
+  controller-owned promotion, restart, health verification, and rollback
 - local docs and contribution flow
 
 This list is for Workbench Local only.
