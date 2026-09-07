@@ -36,3 +36,7 @@ workbench-final-build/
 artifacts/benchmarks/benchmark-phase-q-e14d6a18.json
 scripts/inspect-live-scheduler-state.mjs
 scripts/validation-live-load-fixture.mjs
+
+# Owner-local Workbench provider/runtime state; never source-controlled.
+**/.workbench-provider-state/
+workbench-knowledge-context-runtime.json

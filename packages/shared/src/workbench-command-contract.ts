@@ -37,12 +37,29 @@ export const RUN_WORKBENCH_DIRECT_COMMAND_KINDS = [
 ] as const
 
 export const PERSISTED_VALIDATION_COMMAND_KINDS = [
+  'git_diff_check',
+  'validate_json_files',
+  'security_scan_paths',
   'run_package_script',
   'run_package_test',
   'run_package_test_marker',
   'type_check_web',
   'type_check_cli',
   'run_exact_command'
+] as const
+
+// Provider-owned MCP admission for R23.3. These are the persisted validators
+// whose existing Workbench policy is read-only and bounded. Package scripts and
+// exact commands remain persisted-job capabilities for internal callers, but are
+// not exposed through the MCP validation surface.
+export const SAFE_MCP_VALIDATION_COMMAND_KINDS = [
+  'git_diff_check',
+  'validate_json_files',
+  'security_scan_paths',
+  'run_package_test',
+  'run_package_test_marker',
+  'type_check_web',
+  'type_check_cli'
 ] as const
 
 const blockedSourceIds = new Set(['default', 'workspace', 'current', 'repo'])
@@ -218,6 +235,12 @@ const validationSubmitSchema = <K extends string, S extends z.ZodRawShape>(comma
 }).strict()
 
 export const validationJobSubmitRequestSchema = z.discriminatedUnion('commandKind', [
+  validationSubmitSchema('git_diff_check', { paths: pathListSchema }),
+  validationSubmitSchema('validate_json_files', { paths: pathListSchema }),
+  validationSubmitSchema('security_scan_paths', {
+    paths: pathListSchema,
+    patternSet: securityPatternSetSchema
+  }),
   validationSubmitSchema('type_check_web', {}),
   validationSubmitSchema('type_check_cli', {}),
   validationSubmitSchema('run_package_script', {

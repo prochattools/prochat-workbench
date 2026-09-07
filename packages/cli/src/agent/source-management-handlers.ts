@@ -11,6 +11,7 @@ import {
   startSourceReindex,
   SourceManagementError
 } from './source-management'
+import { applyReconciliationApproval, resolveReconciliationOwnerAuthority, type ReconciliationAction, type ReconciliationClassification, type ReconciliationReasonCode, type ReconciliationRegistrationType } from './source-reconciliation'
 import { setSourceDiscoverySettings, discoverRepositories } from './config'
 import type { PortableOperationHandlers } from '../../../../apps/web/src/lib/actions/portable-operation-dispatcher'
 import { PortableOperationError } from './portable-operation-errors'
@@ -27,6 +28,16 @@ function requireString(payload: Payload, key: string): string {
   return v
 }
 
+function requireAction(value: unknown): Exclude<ReconciliationAction, 'inspect'> {
+  if (value === 'disable' || value === 'remove') return value
+  throw new PortableOperationError('invalid_request', 'action must be disable or remove')
+}
+
+function requireRegistrationType(value: unknown): ReconciliationRegistrationType {
+  if (value === 'source' || value === 'provider') return value
+  throw new PortableOperationError('invalid_request', 'registrationType must be source or provider')
+}
+
 function toPortableError(err: unknown): never {
   if (err instanceof SourceManagementError) {
     const code = err.code === 'not_found' ? 'source_mismatch'
@@ -41,6 +52,22 @@ function toPortableError(err: unknown): never {
 
 export function createSourceManagementHandlers(): PortableOperationHandlers {
   return {
+    approveSourceReconciliation: payload => {
+      const p = payload as Payload
+      const action = requireAction(p.action)
+      const result = applyReconciliationApproval({
+        proposalId: requireString(p, 'proposalId'),
+        action,
+        actorId: resolveReconciliationOwnerAuthority(),
+        registrationId: requireString(p, 'registrationId'),
+        registrationType: requireRegistrationType(p.registrationType),
+        canonicalPath: requireString(p, 'canonicalPath'),
+        classification: requireString(p, 'classification') as ReconciliationClassification,
+        reasonCode: requireString(p, 'reasonCode') as ReconciliationReasonCode,
+        ownerConfirmed: true
+      })
+      return result
+    },
     inspectRepository: (payload) => {
       const p = payload as Payload
       const dirPath = requireString(p, 'path')

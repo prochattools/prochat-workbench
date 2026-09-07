@@ -1,7 +1,7 @@
 import { execFile } from 'child_process'
 import { promises as fsp } from 'fs'
 import path from 'path'
-import { getSourcesSafe } from './config'
+import { getSourcesSafe, isSourcePathAvailable } from './config'
 import { recordGraphifyTelemetry } from './index-graph-telemetry'
 
 type GraphContextBody = {
@@ -305,7 +305,7 @@ export async function handleGraphContext(body: GraphContextBody): Promise<GraphC
       return { statusCode: 400, payload: { error: 'sourceId is required' } }
     }
 
-    const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled)
+    const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
     if (!source) {
       recordGraphifyTelemetry({
         durationMs: Date.now() - startedAt,

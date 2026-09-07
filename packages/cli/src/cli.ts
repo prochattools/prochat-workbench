@@ -73,8 +73,12 @@ export function main(invocationName: string) {
     .command('doctor')
     .description('Show internal Context Intelligence diagnostics')
     .option('--json', 'Emit bounded machine-readable JSON')
+    .option('--approve-reconciliation <proposalId>', 'Apply one exact owner-local reconciliation proposal')
+    .option('--action <disable|remove>', 'Exact reconciliation action to approve')
+    .option('--canonical-path <path>', 'Exact canonical path to bind the approval')
+    .option('--reason-code <code>', 'Exact reconciliation reason code to bind the approval')
     .action(async (options) => {
-      process.exitCode = await doctorCommand(Boolean(options.json))
+      process.exitCode = await doctorCommand(Boolean(options.json), { approveReconciliation: options.approveReconciliation, action: options.action, canonicalPath: options.canonicalPath, reasonCode: options.reasonCode })
     })
 
   program

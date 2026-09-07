@@ -162,6 +162,19 @@ function getAllConfiguredSources(config: AgentConfig, options: SourceHydrationOp
   }))
 }
 
+/**
+ * Cheap fail-closed source availability check used by execution selection.
+ * This deliberately does not inspect Git or index state; callers that need
+ * those observations must use the bounded source/index health paths.
+ */
+export function isSourcePathAvailable(sourcePath: string): boolean {
+  try {
+    return fs.statSync(expandTilde(sourcePath)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 function runGit(sourcePath: string, args: string[]): string | undefined {
   try {
     return execFileSync('git', ['-C', sourcePath, ...args], {
@@ -463,7 +476,7 @@ export function getSourceIndexState(sourceId: string): ReturnType<typeof getSour
 
 export function reconcileActiveSources(config: AgentConfig, options: SourceHydrationOptions = {}): { mode: ActiveSourcesMode; activeSourceIds: string[]; sources: KnowledgeSource[] } {
   const allSources = getAllConfiguredSources(config, options)
-  const enabledSources = allSources.filter(source => source.enabled)
+  const enabledSources = allSources.filter(source => source.enabled && isSourcePathAvailable(source.path))
   const enabledIds = new Set(enabledSources.map(source => source.id))
   const currentMode = config.activeSourcesMode || 'all'
   const currentActiveIds = Array.from(new Set((config.activeSourceIds || []).filter(id => typeof id === 'string' && id.length > 0)))
@@ -499,7 +512,7 @@ export function reconcileActiveSources(config: AgentConfig, options: SourceHydra
   if (options.persist !== false) persistConfig(config)
 
   const activeIds = new Set(nextActiveIds)
-  const hydrated = allSources.map(source => ({ ...withSourceIndexState(source), active: source.enabled && activeIds.has(source.id) } as KnowledgeSource & { active?: boolean }))
+  const hydrated = allSources.map(source => ({ ...withSourceIndexState(source), active: source.enabled && isSourcePathAvailable(source.path) && activeIds.has(source.id) } as KnowledgeSource & { active?: boolean }))
   return { mode: nextMode, activeSourceIds: nextActiveIds, sources: hydrated }
 }
 
@@ -714,11 +727,11 @@ export function getSourcesSafe(options: SourceHydrationOptions = {}): KnowledgeS
 export function getEnabledSources(options: SourceHydrationOptions = {}): KnowledgeSource[] {
   if (options.includeIndexState === false) {
     const config = loadConfig()
-    return ensureSources(config ?? ({} as AgentConfig), options)
+    return ensureSources(config ?? ({} as AgentConfig), options).filter(source => isSourcePathAvailable(source.path))
       .map(source => ({ ...source, path: expandTilde(source.path) }))
       .filter(s => s.enabled)
   }
-  return getSources().filter(s => s.enabled)
+  return getSources().filter(s => s.enabled && isSourcePathAvailable(s.path))
 }
 
 export function getActiveSourceContext(options: SourceHydrationOptions = {}): { mode: ActiveSourcesMode; activeSourceIds: string[]; sources: KnowledgeSource[] } {

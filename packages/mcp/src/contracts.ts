@@ -3,6 +3,7 @@ import path from 'node:path'
 import { Ajv, type ValidateFunction } from 'ajv'
 import {
   sessionAwareRunWorkbenchCommandRequestSchema,
+  type PersistedValidationCommandKind,
   type RunWorkbenchDirectCommandKind
 } from '@workbench/shared'
 import { zodToJsonSchema } from 'zod-to-json-schema'
@@ -207,7 +208,8 @@ function mergeObjectSchemas(schemas: JsonSchema[]): JsonSchema {
 
 function filterSchemaByCommandKinds(
   schema: JsonSchema,
-  admittedCommandKinds: ReadonlySet<RunWorkbenchDirectCommandKind>
+  admittedCommandKinds: ReadonlySet<RunWorkbenchDirectCommandKind>,
+  admittedValidationKinds: ReadonlySet<PersistedValidationCommandKind> = new Set()
 ): JsonSchema | undefined {
   if (!isObjectRecord(schema)) return schema
   const projected: Record<string, unknown> = { ...schema }
@@ -215,18 +217,22 @@ function filterSchemaByCommandKinds(
   if (isObjectRecord(schema.properties)) {
     const properties: Record<string, unknown> = { ...schema.properties }
     const commandKind = properties.commandKind
+    const validationBranch = Object.hasOwn(properties, 'validationJobOperation')
     if (isObjectRecord(commandKind) && Array.isArray(commandKind.enum)) {
       const admitted = commandKind.enum.filter(
-        (value): value is RunWorkbenchDirectCommandKind =>
-          typeof value === 'string' && admittedCommandKinds.has(value as RunWorkbenchDirectCommandKind)
+        (value): value is string => typeof value === 'string' && (
+          validationBranch
+            ? admittedValidationKinds.has(value as PersistedValidationCommandKind)
+            : admittedCommandKinds.has(value as RunWorkbenchDirectCommandKind)
+        )
       )
       if (admitted.length === 0) return undefined
       properties.commandKind = { ...commandKind, enum: admitted }
-    } else if (Object.hasOwn(properties, 'validationJobOperation')) {
+    } else if (validationBranch && admittedValidationKinds.size === 0) {
       return undefined
     }
     if (isObjectRecord(properties.command)) {
-      const filteredCommand = filterSchemaByCommandKinds(properties.command, admittedCommandKinds)
+      const filteredCommand = filterSchemaByCommandKinds(properties.command, admittedCommandKinds, admittedValidationKinds)
       if (!filteredCommand) return undefined
       properties.command = filteredCommand
     }
@@ -236,14 +242,14 @@ function filterSchemaByCommandKinds(
   for (const key of ['anyOf', 'oneOf'] as const) {
     if (!Array.isArray(schema[key])) continue
     const admittedBranches = (schema[key] as JsonSchema[])
-      .map(branch => filterSchemaByCommandKinds(branch, admittedCommandKinds))
+      .map(branch => filterSchemaByCommandKinds(branch, admittedCommandKinds, admittedValidationKinds))
       .filter((branch): branch is JsonSchema => branch !== undefined)
     if (admittedBranches.length === 0) return undefined
     projected[key] = admittedBranches
   }
   if (Array.isArray(schema.allOf)) {
     const admittedBranches = (schema.allOf as JsonSchema[])
-      .map(branch => filterSchemaByCommandKinds(branch, admittedCommandKinds))
+      .map(branch => filterSchemaByCommandKinds(branch, admittedCommandKinds, admittedValidationKinds))
     if (admittedBranches.some(branch => branch === undefined)) return undefined
     projected.allOf = admittedBranches as JsonSchema[]
   }
@@ -252,14 +258,15 @@ function filterSchemaByCommandKinds(
 }
 
 export function buildRunWorkbenchCommandDiscoverySchema(
-  admittedCommandKinds?: ReadonlySet<RunWorkbenchDirectCommandKind>
+  admittedCommandKinds?: ReadonlySet<RunWorkbenchDirectCommandKind>,
+  admittedValidationKinds: ReadonlySet<PersistedValidationCommandKind> = new Set()
 ): JsonSchema {
   const strictSchema = zodToJsonSchema(sessionAwareRunWorkbenchCommandRequestSchema, {
     target: 'openApi3',
     $refStrategy: 'none'
   }) as JsonSchema
   const scopedSchema = admittedCommandKinds
-    ? filterSchemaByCommandKinds(strictSchema, admittedCommandKinds)
+    ? filterSchemaByCommandKinds(strictSchema, admittedCommandKinds, admittedValidationKinds)
     : strictSchema
   if (!scopedSchema) throw new Error('Workbench MCP runWorkbenchCommand scope admits no command kinds.')
   return mergeObjectSchemas([scopedSchema])

@@ -240,6 +240,15 @@ const normalizeValidationSubmit = (record: Record<string, unknown>): WorkbenchVa
   }
 
   switch (commandKind) {
+    case 'git_diff_check':
+    case 'validate_json_files':
+      return { ...common, paths: requiredStrings(record, 'paths') }
+    case 'security_scan_paths':
+      return {
+        ...common,
+        paths: requiredStrings(record, 'paths'),
+        patternSet: requiredString(record, 'patternSet') as SecurityPatternSet
+      }
     case 'type_check_web':
     case 'type_check_cli':
       return common

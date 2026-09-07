@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { getConfigPath, expandTilde } from '../utils/paths'
-import { getSourceIndexBinding, loadConfig, saveConfig, withSourceDefaults, withSourceIndexState, generateSourceIdFromPath, clearGitMetadataCache, setSourceIndexStatus, type AgentConfig } from './config'
+import { getSourceIndexBinding, loadConfig, saveConfig, withSourceDefaults, withSourceIndexState, generateSourceIdFromPath, clearGitMetadataCache, setSourceIndexStatus, isSourcePathAvailable, type AgentConfig } from './config'
 import { getIndexRecord, upsertIndexState } from './index-state'
 import { IndexScanError, Indexer } from './indexer'
 import { INDEX_SCAN_EXCLUSION_VERSION, INDEX_SCAN_POLICY_ID, INDEX_SCAN_POLICY_VERSION } from './index-scan-policy'
@@ -451,6 +451,10 @@ export function startSourceReindex(sourceId: string): ReindexSourceResult {
   const target = getCurrentSources(loadConfigRequired()).find(source => source.id === sourceId)
   if (!target) throw new SourceManagementError('not_found', `Source not found: ${sourceId}`)
   if (!target.enabled) throw new SourceManagementError('invalid_state', `Source is disabled: ${sourceId}`)
+  if (!isSourcePathAvailable(target.path)) {
+    upsertIndexState(sourceId, { indexed: false, indexStatus: 'failed', indexFailureCode: 'FAILED_IO', indexError: 'source_missing_or_renamed' })
+    return { source: { ...withSourceIndexState(target), isManaged: !!target.isManagedWorktree, managedWorktreeDir: target.isManagedWorktree ? getManagedWorktreePath(target) : undefined }, status: 'failed' }
+  }
 
   if (!activeReindexes.has(sourceId)) {
     activeReindexes.add(sourceId)
@@ -503,7 +507,7 @@ export function startSourceReindex(sourceId: string): ReindexSourceResult {
           indexRetryAttempts.set(sourceId, attempt + 1)
           setTimeout(() => {
             try {
-              if (getCurrentSources(loadConfigRequired()).some(source => source.id === sourceId && source.enabled)) startSourceReindex(sourceId)
+              if (getCurrentSources(loadConfigRequired()).some(source => source.id === sourceId && source.enabled && isSourcePathAvailable(source.path))) startSourceReindex(sourceId)
             } catch { /* the next discovery/reconciliation will surface the source state */ }
           }, retryDelayMs)
         } else {

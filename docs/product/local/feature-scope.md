@@ -5,6 +5,9 @@ Current and planned Workbench Local features:
 - source management
 - branch-aware grouping for configured Git checkouts and linked worktrees
 - local indexing
+- bounded source/provider health diagnostics
+- owner-approved reconciliation proposals with fail-closed handling for
+  ambiguous, active, dirty, and managed registrations
 - dashboard active context
 - explicit-source Custom GPT actions
 - strict source locking with placeholder-source rejection

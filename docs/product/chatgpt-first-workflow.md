@@ -12,6 +12,7 @@ Workbench Local already provides:
 - local agent and dashboard
 - source management
 - local indexing and search
+- bounded source/provider health diagnostics and owner-approved reconciliation
 - dashboard active source context
 - branch-aware grouping for configured Git checkouts/worktrees
 - safe write modes
@@ -66,6 +67,8 @@ It should include:
 - local handoff objects and links
 - optional local command runner with strict confirmation
 - dashboard fallback for source management, settings, logs, plans, and handoffs
+- CLI doctor output for bounded registration, index, provider, and runtime
+  diagnosis without automatic cleanup
 - public docs and contribution flow
 
 Workbench Local should not be intentionally crippled. The open-source version should be useful enough to run real work end-to-end on a user's own machine.

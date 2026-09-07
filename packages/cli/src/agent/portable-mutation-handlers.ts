@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { getSourcesSafe, getWriteMode, loadConfig } from './config'
+import { getSourcesSafe, getWriteMode, isSourcePathAvailable, loadConfig } from './config'
 import type { AutonomyDecisionEvidenceReference } from '@workbench/shared'
 import { buildWriteConfirmationToken, hasValidWriteConfirmation, normalizeRepoRelativePath, validateWriteTarget, type WriteChangeType } from './safe-access'
 import { getAllowedCommandKinds, runSafeCommand, type SafeCommandRequest, type SafeCommandResult } from './command-runner'
@@ -71,9 +71,10 @@ function sessionFor(body: Payload, context: PortableExecutionContext): string {
   return sessionId
 }
 
-function requireEnabledSource(sourceId: string, sources = getSourcesSafe({ refreshGitMetadata: false })): { id: string; path: string } {
-  const source = sources.find(item => item.id === sourceId && item.enabled)
-  if (!source) throw new PortableOperationError('source_mismatch', `Source not found or disabled: ${sourceId}`)
+function requireEnabledSource(sourceId: string, sources?: ReturnType<typeof getSourcesSafe>): { id: string; path: string } {
+  const configuredSources = sources || getSourcesSafe({ refreshGitMetadata: false })
+  const source = configuredSources.find(item => item.id === sourceId && item.enabled && (sources ? true : isSourcePathAvailable(item.path)))
+  if (!source) throw new PortableOperationError('source_mismatch', `Source not found or unavailable: ${sourceId}`)
   return source
 }
 
@@ -137,7 +138,7 @@ function decisionArguments(value: Record<string, unknown>): Record<string, unkno
   // Paths have their own canonical set in the decision request. Keeping raw
   // path spellings in arguments would make ./a, a, and a\\b different despite
   // representing the same exact action scope.
-  return Object.fromEntries(Object.entries(value).filter(([key]) => ![
+  return Object.fromEntries(Object.entries(value).filter(([key, item]) => item !== undefined && ![
     'confirmedByUser', 'confirmationToken', 'signal', 'approvalId',
     'path', 'from', 'to', 'normalizedPath', 'paths', 'outputPath'
   ].includes(key)))

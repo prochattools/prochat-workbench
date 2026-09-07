@@ -15,6 +15,7 @@ import {
 } from './n8n-workflow-migration-capability'
 import { createNodeN8nWorkflowMigrationExecutor } from './n8n-workflow-migration-executor'
 import { createOwnerLocalN8nRuntimeConfigurationSnapshot } from './n8n-runtime-config'
+import { isSourcePathAvailable } from './config'
 
 type PublicMigrationFailureCode = ControlledMigrationFailure['error']['code'] | 'mutation_blocked'
 
@@ -57,7 +58,7 @@ const publicFailure = (request: MigrationRunCommandPlan, code: PublicMigrationFa
 })
 
 function configuredSource(request: MigrationRunCommandPlan, dependencies: MigrationCommandAdapterDependencies): ControlledMigrationSource | undefined {
-  const configured = dependencies.getSources().find(source => source.id === request.sourceId && source.enabled)
+  const configured = dependencies.getSources().find(source => source.id === request.sourceId && source.enabled && (dependencies.realpath ? true : isSourcePathAvailable(source.path)))
   if (!configured) return undefined
   try {
     const rootPath = (dependencies.realpath || fs.realpathSync)(configured.path)

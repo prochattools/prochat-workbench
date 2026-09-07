@@ -11,6 +11,9 @@ Allowed in this repo:
 - local source management
 - branch-aware grouping for configured Git checkouts and linked worktrees
 - local indexing, search, and read workflows
+- bounded source/provider health diagnostics
+- exact owner-approved reconciliation proposals for stale or missing local
+  registrations; no automatic cleanup
 - dashboard active source context
 - explicit `sourceId` Custom GPT actions
 - safe local write policy

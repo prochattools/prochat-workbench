@@ -86,6 +86,25 @@ test('projects runWorkbenchCommand discovery to the admitted direct command kind
   assert.equal(commandProperties.migration !== undefined, true)
 })
 
+test('projects the provider-owned safe validation kinds without admitting arbitrary validation commands', () => {
+  const schema = buildRunWorkbenchCommandDiscoverySchema(
+    new Set(['n8n_workflow_migration']),
+    new Set(['git_diff_check', 'validate_json_files', 'security_scan_paths', 'run_package_test', 'run_package_test_marker', 'type_check_web', 'type_check_cli'])
+  )
+  const properties = schema.properties as Record<string, unknown>
+  const command = properties.command as { properties?: Record<string, unknown> }
+  const commandProperties = command.properties || {}
+  const commandKind = commandProperties.commandKind as { enum?: string[] }
+
+  assert.deepEqual([...(commandKind.enum ?? [])].sort(), [
+    'git_diff_check', 'n8n_workflow_migration', 'run_package_test', 'run_package_test_marker',
+    'security_scan_paths', 'type_check_cli', 'type_check_web', 'validate_json_files'
+  ].sort())
+  assert.equal(commandProperties.validationJobOperation !== undefined, true)
+  assert.equal(commandProperties.executable !== undefined, false)
+  assert.equal(commandProperties.scriptName !== undefined, false)
+})
+
 test('strict shared runWorkbenchCommand union rejects private and arbitrary execution fields', () => {
   const contract = loadWorkbenchToolContracts(repoRoot).get('runWorkbenchCommand')!
   const valid = {

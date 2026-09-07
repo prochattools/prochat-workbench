@@ -151,9 +151,13 @@ function readStore(options: WorkbenchReadResultRecoveryOptions = {}): Store | Re
       || new Set(parsed.records.map(record => (record as WorkbenchReadResultRecoveryRecord).recoveryId)).size !== parsed.records.length) {
       return { ok: false, code: 'READ_RESULT_RECOVERY_UNAVAILABLE', message: 'The read-result recovery store is invalid.' }
     }
-    const store = parsed as Store
-    if (Buffer.byteLength(JSON.stringify(store), 'utf8') > configured.maxStoreBytes) return { ok: false, code: 'READ_RESULT_RECOVERY_FULL', message: 'The read-result recovery store reached its bounded capacity.' }
-    return store
+    // An oversized but structurally valid store is still recoverable: the
+    // bounded writer below evicts only reconciled records before publishing a
+    // new version. Rejecting it here makes that existing compaction path
+    // unreachable and strands otherwise recoverable reads at the capacity
+    // boundary. Pending records remain protected by persistStore's eviction
+    // rule.
+    return parsed as Store
   } catch {
     return { ok: false, code: 'READ_RESULT_RECOVERY_UNAVAILABLE', message: 'The read-result recovery store is unavailable.' }
   }

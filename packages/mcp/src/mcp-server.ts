@@ -55,15 +55,15 @@ export function createWorkbenchMcpServer(params: { repoRoot: string; invoke?: In
   const contracts = loadWorkbenchToolContracts(params.repoRoot)
   const invoke = params.invoke ?? createWorkbenchClient()
   const scope = params.scope ?? loadWorkbenchMcpScope()
-  const runWorkbenchCommandAdmitted = scope.tools.has('runWorkbenchCommand') && scope.commandKinds.size > 0
+  const runWorkbenchCommandAdmitted = scope.tools.has('runWorkbenchCommand') && (scope.commandKinds.size > 0 || scope.validationKinds.size > 0)
   const admittedToolNames = WORKBENCH_TOOL_NAMES.filter(name =>
     scope.tools.has(name) && (name !== 'runWorkbenchCommand' || runWorkbenchCommandAdmitted)
   )
   const admittedToolNameSet = new Set<WorkbenchToolName>(admittedToolNames)
   const runWorkbenchCommandDiscoverySchema = runWorkbenchCommandAdmitted
-    ? buildRunWorkbenchCommandDiscoverySchema(scope.commandKinds)
+    ? buildRunWorkbenchCommandDiscoverySchema(scope.commandKinds, scope.validationKinds)
     : undefined
-  const server = new Server({ name: 'workbench', version: '1.3.13-beta' }, {
+  const server = new Server({ name: 'workbench', version: '1.3.14-beta' }, {
     capabilities: { tools: {} },
     instructions: 'Use only the admitted bounded Workbench actions. Workbench remains authoritative for source selection, policy, confirmation, grants, dispatch, audit, and execution. Never retry mutation-capable calls after ambiguous transport results.'
   })
@@ -169,7 +169,13 @@ export function createWorkbenchMcpServer(params: { repoRoot: string; invoke?: In
       const commandKind = command && typeof command === 'object' && !Array.isArray(command)
         ? (command as Record<string, unknown>).commandKind
         : undefined
-      if (typeof commandKind === 'string' && !scope.commandKinds.has(commandKind as never)) {
+      const validationOperation = command && typeof command === 'object' && !Array.isArray(command)
+        ? (command as Record<string, unknown>).validationJobOperation
+        : undefined
+      const admitted = validationOperation !== undefined
+        ? typeof commandKind === 'string' && (scope.validationKinds.has(commandKind as never) || commandKind === 'read_evidence')
+        : typeof commandKind === 'string' && scope.commandKinds.has(commandKind as never)
+      if (typeof commandKind === 'string' && !admitted) {
         return toolResponse({
           ok: false,
           code: 'mcp_scope_denied',
@@ -191,7 +197,13 @@ export function createWorkbenchMcpServer(params: { repoRoot: string; invoke?: In
       const commandKind = command && typeof command === 'object' && !Array.isArray(command)
         ? (command as Record<string, unknown>).commandKind
         : undefined
-      if (typeof commandKind !== 'string' || !scope.commandKinds.has(commandKind as never)) {
+      const validationOperation = command && typeof command === 'object' && !Array.isArray(command)
+        ? (command as Record<string, unknown>).validationJobOperation
+        : undefined
+      const admitted = validationOperation !== undefined
+        ? typeof commandKind === 'string' && (scope.validationKinds.has(commandKind as never) || commandKind === 'read_evidence')
+        : typeof commandKind === 'string' && scope.commandKinds.has(commandKind as never)
+      if (!admitted) {
         return toolResponse({
           ok: false,
           code: 'mcp_scope_denied',

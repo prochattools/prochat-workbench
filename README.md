@@ -123,6 +123,9 @@ Workbench supports:
 - manual reindexing
 - optional per-source auto-index settings
 - searchable status reporting for ChatGPT and the dashboard
+- bounded source/provider health diagnostics through `workbench doctor`
+- owner-approved reconciliation proposals for stale or missing registrations;
+  ambiguous, active, dirty, and managed cases remain blocked
 
 Every repo action carries an explicit source lock. Start with `getWorkbenchStatus?include=sources`, then reuse one exact enabled `sourceId` for the conversation. The placeholders `default`, `workspace`, `current`, and `repo` are rejected; Workbench never maps them to an implicit or environment-specific source.
 
@@ -428,6 +431,15 @@ The dashboard guides you through setup:
 3. verify the public OpenAPI endpoint when using Custom GPT Actions
 4. activate a repository by its human-readable name
 5. keep the returned source locked for the conversation
+
+For terminal-based local diagnosis after building the CLI, use the bounded
+doctor command. It reports registration, index, provider, and runtime health
+without automatically disabling or removing registrations:
+
+```bash
+pnpm --dir packages/cli build
+node packages/cli/dist/bin/workbench.js doctor --json
+```
 
 ## Connect a Custom GPT
 

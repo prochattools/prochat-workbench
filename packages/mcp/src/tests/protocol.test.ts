@@ -173,6 +173,48 @@ test('does not advertise or invoke runWorkbenchCommand without admitted command 
   }
 })
 
+test('admits safe validation through the default Workbench profile and denies unrestricted validation kinds', async () => {
+  const calls: Record<string, unknown>[] = []
+  const { client, server } = await connectedPair(async (_contract, input) => {
+    calls.push(input)
+    return { ok: true, result: { status: 'accepted' } }
+  })
+  try {
+    const accepted = await client.callTool({
+      name: 'runWorkbenchCommand',
+      arguments: sessionCommand({
+        sourceId: 'fixture-source',
+        commandKind: 'validate_json_files',
+        validationJobOperation: 'submit',
+        idempotencyKey: 'mcp-safe-validation-test',
+        paths: ['package.json'],
+        networkAccess: false
+      })
+    })
+    assert.equal(accepted.isError, false)
+    assert.equal(calls.length, 1)
+
+    const denied = await client.callTool({
+      name: 'runWorkbenchCommand',
+      arguments: sessionCommand({
+        sourceId: 'fixture-source',
+        commandKind: 'run_exact_command',
+        validationJobOperation: 'submit',
+        idempotencyKey: 'mcp-unsafe-validation-test',
+        executable: 'rg',
+        args: ['--files', '.'],
+        networkAccess: false
+      })
+    })
+    assert.equal(denied.isError, true)
+    assert(JSON.stringify(denied).includes('mcp_scope_denied'))
+    assert.equal(calls.length, 1)
+  } finally {
+    await client.close()
+    await server.close()
+  }
+})
+
 test('serialization keeps non-command tool contracts intact', async () => {
   const { client, server } = await connectedPair()
   try {
@@ -222,6 +264,17 @@ test('Brain profile exposes exactly its three admitted tools and no client workf
       client.callTool({ name: 'mcpCapabilityDiscover', arguments: {} }),
       /Unknown or unadmitted Workbench MCP tool/
     )
+    const deniedValidation = await client.callTool({
+      name: 'runWorkbenchCommand',
+      arguments: sessionCommand({
+        sourceId: 'brain',
+        commandKind: 'type_check_cli',
+        validationJobOperation: 'submit',
+        idempotencyKey: 'brain-validation-denied'
+      })
+    })
+    assert.equal(deniedValidation.isError, true)
+    assert(JSON.stringify(deniedValidation).includes('mcp_scope_denied'))
   } finally {
     await client.close()
     await server.close()

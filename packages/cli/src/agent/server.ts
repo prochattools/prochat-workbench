@@ -8,7 +8,7 @@ import { VaultSearcher } from './search'
 import { readFile, createFile, appendFile, listFolder } from './vault'
 import { logToFile } from '../utils/logger'
 import { createExportPlan } from './export'
-import { loadConfig, getWorkspaces, getSources, getSourcesSafe, addSource, removeSource, setSourceEnabled, setSourceAutoIndex, markSourceAutoIndexed, getSourceDiscoverySettings, setSourceDiscoverySettings, discoverRepositories, getActiveSourceContext, setActiveSourceContext, getWriteMode, setWriteMode, getSourceIndexState, setSourceIndexStatus } from './config'
+import { loadConfig, getWorkspaces, getSources, getSourcesSafe, addSource, removeSource, setSourceEnabled, setSourceAutoIndex, markSourceAutoIndexed, getSourceDiscoverySettings, setSourceDiscoverySettings, discoverRepositories, getActiveSourceContext, setActiveSourceContext, getWriteMode, setWriteMode, getSourceIndexState, setSourceIndexStatus, isSourcePathAvailable } from './config'
 import { reconcileIndexStateFromDocs, flushIndexStateOnShutdown } from './index-state'
 import { collectIndexQueueDiagnostics } from './index-queue-observability'
 import { listWorkspaceTree, grepWorkspace, getWorkspaceInfo, resolveWorkspacePath, validateWorkspacePath } from './workspace'
@@ -39,6 +39,7 @@ import { initializeCapabilityRuntime, scheduleCapabilityRuntimeMaintenance } fro
 import { initializeKnowledgeContextRuntime } from '../../../mcp/dist/knowledge-context-runtime.js'
 import { getProviderRuntimeProjection } from '../../../mcp/dist/provider-onboarding.js'
 import { resolveActiveProviders } from '../../../mcp/dist/provider-activation.js'
+import { loadConfiguredProviderRuntime } from '../../../mcp/dist/workspace-configuration.js'
 import { getCodebaseMemoryProviderDiagnostics } from './cbm-graph-context'
 import { WorkbenchMaintenanceScheduler } from './workbench-maintenance-scheduler'
 
@@ -118,8 +119,11 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
   const knowledgeContextRuntimePromise = initializeKnowledgeContextRuntime({ registry: { rootDir: process.env.WORKBENCH_PROVIDER_STATE_DIR }, indexRootDir: process.env.WORKBENCH_PROVIDER_STATE_DIR, ...(activeProviderResolution.ok ? { activeProviderIds: activeProviderResolution.value } : {}) })
   const providerRuntimeProjection = getProviderRuntimeProjection({ rootDir: process.env.WORKBENCH_PROVIDER_STATE_DIR, knowledgeRegistry: { rootDir: process.env.WORKBENCH_PROVIDER_STATE_DIR }, authorizedBy: 'runtime' })
   if (!providerRuntimeProjection.ok) console.error(`[Provider runtime] Startup discovery failed safely: ${'message' in providerRuntimeProjection ? providerRuntimeProjection.message : 'unknown error'}`)
+  const workspaceProviderRuntime = loadConfiguredProviderRuntime()
+  if (!workspaceProviderRuntime.ok) console.error(`[Workspace configuration] Loading failed safely: ${'message' in workspaceProviderRuntime ? workspaceProviderRuntime.message : 'unknown error'}`)
+  else console.log(`[Workspace configuration] Loaded ${workspaceProviderRuntime.value.workspaces.length} workspace(s), ${workspaceProviderRuntime.value.knowledgeProviders.length} knowledge provider(s), ${workspaceProviderRuntime.value.capabilityProviders.length} capability provider(s).`)
   const recoveredExecutionJournals = recoverWorkbenchExecutionJournals({
-    sourceRootFor: sourceId => getSourcesSafe().find(source => source.id === sourceId && source.enabled)?.path,
+    sourceRootFor: sourceId => getSourcesSafe().find(source => source.id === sourceId && source.enabled && isSourcePathAvailable(source.path))?.path,
     onRecovered: journal => {
       recoverInterruptedWorkbenchPacket({
         packetId: journal.packetId,
@@ -153,7 +157,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
   setTimeout(() => {
     const drained = drainQueuedWorkbenchPackets({
       limit: 5,
-      sourceRootFor: sourceId => getSourcesSafe().find(source => source.id === sourceId && source.enabled)?.path
+      sourceRootFor: sourceId => getSourcesSafe().find(source => source.id === sourceId && source.enabled && isSourcePathAvailable(source.path))?.path
     })
     if (drained.scheduled > 0) {
       console.log(`[Workbench packets] Scheduled ${drained.scheduled} queued packet(s) after startup recovery: ${drained.packetIds.join(', ')}`)
@@ -169,7 +173,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
     indexingSourceIds: () => Array.from(indexingSources),
     maintenanceSnapshot: () => maintenanceScheduler.compactSnapshot(),
     requestSourceIndexRecovery: sourceIds => sourceIds.map(sourceId => {
-      const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled)
+      const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
       const state = getSourceIndexState(sourceId)
       if (!source) return { sourceId, status: 'unavailable' as const }
       if (isSourceSearchReady(state)) return { sourceId, status: 'already_ready' as const }
@@ -348,7 +352,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
     if (hasQueuedReindex(sourceId)) return false
     setSourceIndexStatus(sourceId, { indexed: false, indexStatus: 'pending', queuedAt: new Date().toISOString(), indexError: undefined })
     const queued = maintenanceScheduler.enqueue({ sourceId, reason, run: async yieldToForeground => {
-      if (!getSourcesSafe().some(source => source.id === sourceId && source.enabled)) return
+      if (!getSourcesSafe().some(source => source.id === sourceId && source.enabled && isSourcePathAvailable(source.path))) return
       maintenanceYield = yieldToForeground
       setSourceIndexStatus(sourceId, { indexed: false, indexStatus: 'indexing', indexedFileCount: 0, indexProgressCompleted: 0, indexProgressTotal: 0, indexingAt: new Date().toISOString(), indexError: undefined })
       indexingSources.add(sourceId)
@@ -395,7 +399,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
         if (retryScheduled) {
           indexRetryAttempts.set(sourceId, attempt + 1)
           setTimeout(() => {
-            if (getSourcesSafe().some(source => source.id === sourceId && source.enabled)) reindexSourceInBackground(sourceId, sourcePath, reason)
+            if (getSourcesSafe().some(source => source.id === sourceId && source.enabled && isSourcePathAvailable(source.path))) reindexSourceInBackground(sourceId, sourcePath, reason)
           }, retryDelayMs)
         } else {
           indexRetryAttempts.delete(sourceId)
@@ -586,8 +590,8 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
     try {
       const { sourceId, goal, maxIterations, autonomyLevel, documentationPath, reviewEveryStep, autoCommit, autoPush, full } = request.body
       if (!sourceId || typeof sourceId !== 'string') return reply.code(400).send({ error: 'sourceId is required' })
-      const source = getSourcesSafe().find(item => item.id === sourceId)
-      if (!source || !source.enabled) return reply.code(404).send({ error: `Source not found or disabled: ${sourceId}` })
+      const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
+      if (!source || !source.enabled || !isSourcePathAvailable(source.path)) return reply.code(404).send({ error: `Source not found or unavailable: ${sourceId}` })
       if (source.indexStatus !== 'ready') return reply.code(409).send({ error: `Source is not ready for sequential work: ${sourceId}`, indexStatus: source.indexStatus })
       const job = startAgentJob({ sourceId, goal, maxIterations, autonomyLevel, documentationPath, reviewEveryStep, autoCommit, autoPush })
       appendAgentEvent({
@@ -620,7 +624,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
       if (action === 'submit') {
         const operation = getPersistedDelegationOperation(operationId)
         if (!operation) return reply.code(404).send({ error: 'Delegation operation not found.' })
-        const source = getSourcesSafe().find(item => item.id === operation.sourceId && item.enabled)
+        const source = getSourcesSafe().find(item => item.id === operation.sourceId && item.enabled && isSourcePathAvailable(item.path))
         if (!source) return reply.code(404).send({ error: 'Delegation source is unavailable.' })
         if (source.indexStatus !== 'ready') return reply.code(409).send({ error: 'Delegation source is not ready for sequential work.' })
         if (!request.body.contract || !request.body.branch || !request.body.ownerSessionId) return reply.code(400).send({ error: 'contract, branch, and ownerSessionId are required for submission.' })
@@ -731,8 +735,8 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
           status: job.status
         })
         if (action === 'resume') {
-          const source = getSourcesSafe().find(item => item.id === job.sourceId)
-          if (source?.enabled) {
+          const source = getSourcesSafe().find(item => item.id === job.sourceId && item.enabled && isSourcePathAvailable(item.path))
+          if (source?.enabled && isSourcePathAvailable(source.path)) {
             setImmediate(() => {
               drainQueuedWorkbenchPackets({
                 sourceId: job.sourceId,
@@ -914,7 +918,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
     }
     const sourceId = String(request.body?.sourceId || '').trim()
     if (!sourceId) return reply.code(400).send({ error: 'sourceId is required' })
-    const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled)
+    const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
     if (!source) return reply.code(404).send({ error: `Source not found or disabled: ${sourceId}` })
     const run = getActiveWorkbenchRun(sourceId)
     const packets = run && typeof run.id === 'string'
@@ -947,7 +951,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
   fastify.post<{ Body: { sourceId: string; goal: string; documentationPath?: string; maxIterations?: number; autoCommit?: boolean } }>('/api/workbench-runs/create', async (request, reply) => {
     try {
       const { sourceId, goal, documentationPath, maxIterations, autoCommit } = request.body || {}
-      const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled)
+      const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
       if (!source) return reply.code(404).send({ error: `Source not found or disabled: ${sourceId}` })
       const result = createWorkbenchRun({ sourceId, goal, documentationPath, maxIterations, autoCommit, autoPush: false, autonomyLevel: 'hands_off_safe' })
       return reply.header('Cache-Control', 'no-store').send({
@@ -964,7 +968,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
   fastify.post<{ Body: { sourceId: string; runId?: string } }>('/api/workbench-runs/resume', async (request, reply) => {
     try {
       const { sourceId, runId } = request.body || {}
-      const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled)
+      const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
       if (!source) return reply.code(404).send({ error: `Source not found or disabled: ${sourceId}` })
       resumeWorkbenchRun({ sourceId, runId })
       return reply.header('Cache-Control', 'no-store').send({ status: 'ok', resumed: true, verified: true, run: getActiveWorkbenchRun(sourceId) })
@@ -976,7 +980,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
   fastify.post<{ Body: { sourceId: string; runId: string; summary: string } }>('/api/workbench-runs/close', async (request, reply) => {
     try {
       const { sourceId, runId, summary } = request.body || {}
-      const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled)
+      const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
       if (!source) return reply.code(404).send({ error: `Source not found or disabled: ${sourceId}` })
       const { closeWorkbenchRun } = await import('./workbench-run-close')
       const run = closeWorkbenchRun({ sourceId, runId, summary })
@@ -989,7 +993,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
 
   fastify.post<{ Body: { sourceId: string; packet: WorkbenchPacket } }>('/api/workbench-packets/preflight', async (request, reply) => {
     const { sourceId, packet } = request.body || {}
-    const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled)
+    const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
     if (!source) return reply.code(404).send({ error: `Source not found or disabled: ${sourceId}` })
     if (!packet || packet.sourceId !== sourceId) {
       return reply.code(400).send({ error: 'packet.sourceId must match sourceId' })
@@ -1039,7 +1043,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
       runId,
       limit,
       leaseMs,
-      sourceRootFor: requestedSourceId => getSourcesSafe().find(source => source.id === requestedSourceId && source.enabled)?.path
+      sourceRootFor: requestedSourceId => getSourcesSafe().find(source => source.id === requestedSourceId && source.enabled && isSourcePathAvailable(source.path))?.path
     })
     return reply
       .code(result.status === 'already_running' ? 409 : 200)
@@ -1053,7 +1057,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
       sourceId,
       packetId,
       leaseMs,
-      sourceRootFor: requestedSourceId => getSourcesSafe().find(source => source.id === requestedSourceId && source.enabled)?.path
+      sourceRootFor: requestedSourceId => getSourcesSafe().find(source => source.id === requestedSourceId && source.enabled && isSourcePathAvailable(source.path))?.path
     })
     return reply
       .code(result.status === 'rejected' ? 409 : 202)
@@ -1118,7 +1122,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
 
   fastify.post<{ Body: { sourceId: string; packetId: string; leaseToken: string } }>('/api/workbench-packets/plan', async (request, reply) => {
     const { sourceId, packetId, leaseToken } = request.body || {}
-    const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled)
+    const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
     if (!source) return reply.code(404).send({ error: `Source not found or disabled: ${sourceId}` })
     const result = planWorkbenchPacketExecution({ packetId, leaseToken, sourceId, sourceRoot: source.path })
     return reply
@@ -1129,7 +1133,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
 
   fastify.post<{ Body: { sourceId: string; packetId: string; leaseToken: string } }>('/api/workbench-packets/execute', async (request, reply) => {
     const { sourceId, packetId, leaseToken } = request.body || {}
-    const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled)
+    const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
     if (!source) return reply.code(404).send({ error: `Source not found or disabled: ${sourceId}` })
     const result = await executeWorkbenchPacket({ packetId, leaseToken, sourceId, sourceRoot: source.path })
     return reply
@@ -2100,7 +2104,7 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
         return reply.code(400).send({ error: 'Missing or invalid sourceId' })
       }
 
-      const source = getSourcesSafe().find(item => item.id === sourceId)
+      const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
       if (!source) {
         return reply.code(404).send({ error: `Source not found: ${sourceId}` })
       }

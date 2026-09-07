@@ -1,4 +1,5 @@
 import { getSourcesSafe } from './config'
+import { isSourcePathAvailable } from './config'
 import { handleGraphContext } from './graph-context'
 import {
   CbmTransportUnavailableError,
@@ -150,8 +151,8 @@ export async function handleGraphContextRouted(
   const telemetryRecorder = dependencies.telemetryRecorder || recordGraphBackendTelemetry
 
   if (!sourceId) return { statusCode: 400, payload: { error: 'sourceId is required' } }
-  const source = sourceResolver().find(item => item.id === sourceId && item.enabled)
-  if (!source) return { statusCode: 404, payload: { error: `Source not found or disabled: ${sourceId}` } }
+  const source = sourceResolver().find(item => item.id === sourceId && item.enabled && (dependencies.sourceResolver ? true : isSourcePathAvailable(item.path)))
+  if (!source) return { statusCode: 404, payload: { error: `Source not found or unavailable: ${sourceId}` } }
 
   if (selected.invalid || selected.backend === 'disabled') {
     const reason: GraphFallbackReason = selected.invalid ? 'invalid_backend' : 'disabled'

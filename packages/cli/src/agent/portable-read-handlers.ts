@@ -4,7 +4,7 @@ import { getActiveWorkbenchRun, listActiveWorkbenchRuns } from './agent-jobs'
 import { appendAgentEvent, listWorkbenchActivity } from './agent-events'
 import { ensureWorkbenchActionRun, type WorkbenchActionRunBinding, updateAgentJob } from './agent-jobs'
 import { listWorkbenchPacketRecords } from './workbench-packet-store'
-import { getActiveSourceContext, getSourceIndexState, getSourcesSafe } from './config'
+import { getActiveSourceContext, getSourceIndexState, getSourcesSafe, isSourcePathAvailable } from './config'
 import { handleFocusedRead } from './focused-read'
 import { handleGraphContextRouted } from './graph-context-router'
 import { Indexer, getIndexedDocumentCountFromDisk } from './indexer'
@@ -22,6 +22,7 @@ import type { WorkbenchEvidenceStoreOptions } from './workbench-evidence-store'
 import { getWorkbenchReadResultRecovery, markWorkbenchReadResultReconciled, persistWorkbenchReadResult, type WorkbenchReadResultRecoveryIdentity, type WorkbenchReadResultRecoveryOptions } from './workbench-read-result-recovery'
 import { projectActiveRunContinuity, resolveResumeNavigation, type ActiveRunContinuity } from '@workbench/shared'
 import { getFocusedWorkspace } from './focused-workspace'
+import { getSourceReconciliationReport } from './source-reconciliation'
 
 const MAX_PATHS = 5
 const MAX_FILE_BYTES = 4_000
@@ -374,7 +375,7 @@ async function readContext(payload: Payload, executionContext?: PortableExecutio
   if (mode === 'active_run') {
     const sourceId = executionContext?.sourceId || asString(payload.sourceId)
     if (!sourceId) fail('invalid_request', 'sourceId is required')
-    const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled)
+    const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
     if (!source) fail('source_mismatch', `Source not found or disabled: ${sourceId}`)
     const run = getActiveWorkbenchRun(sourceId)
     const requestedRunId = asString(payload.runId)
@@ -486,6 +487,15 @@ async function readContext(payload: Payload, executionContext?: PortableExecutio
 
 export function createPortableReadHandlers(dependencies: PortableReadHandlerDependencies = {}): PortableOperationHandlers {
   return {
+    getSourceHealth: payload => {
+      const request = payload as Payload
+      const maxDetails = bounded(request.maxDetails, 256, 1, 256)
+      const maxProposals = bounded(request.maxProposals, 256, 1, 256)
+      // This is the canonical owner-local projection. It performs bounded
+      // path/Git/index/provider checks only; the reconciliation authority
+      // never triggers semantic indexing or invokes a provider.
+      return getSourceReconciliationReport({ maxDetails, maxProposals })
+    },
     getWorkbenchStatus: payload => {
       const include = asString((payload as Payload).include)
       const fullSources = include === 'sources' || include === 'all'

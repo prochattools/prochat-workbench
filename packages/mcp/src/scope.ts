@@ -1,5 +1,7 @@
 import {
   RUN_WORKBENCH_DIRECT_COMMAND_KINDS,
+  SAFE_MCP_VALIDATION_COMMAND_KINDS,
+  type PersistedValidationCommandKind,
   type RunWorkbenchDirectCommandKind
 } from '@workbench/shared'
 import { WORKBENCH_TOOL_NAMES, type WorkbenchToolName } from './contracts.js'
@@ -16,6 +18,7 @@ export { MCP_ALLOWED_CLIENT_WORKFLOW_TOOLS_ENV }
 export type WorkbenchMcpScope = {
   tools: ReadonlySet<WorkbenchToolName>
   commandKinds: ReadonlySet<RunWorkbenchDirectCommandKind>
+  validationKinds: ReadonlySet<PersistedValidationCommandKind>
   clientWorkflowTools: ReadonlySet<ClientWorkflowToolName>
 }
 
@@ -56,5 +59,18 @@ export function loadWorkbenchMcpScope(env: NodeJS.ProcessEnv = process.env): Wor
     CLIENT_WORKFLOW_TOOL_NAMES,
     MCP_ALLOWED_CLIENT_WORKFLOW_TOOLS_ENV
   )
-  return { tools: new Set(tools), commandKinds: new Set(commandKinds), clientWorkflowTools: new Set(clientWorkflowTools) }
+  // The unrestricted Workbench registration is the only profile that receives
+  // the provider-owned safe validation surface. Restricted profiles (including
+  // Brain) must opt into a separate, explicitly admitted validation policy in a
+  // future release rather than inheriting Workbench validation accidentally.
+  const unrestrictedWorkbenchProfile = env[MCP_ALLOWED_TOOLS_ENV] === undefined && env[MCP_ALLOWED_COMMAND_KINDS_ENV] === undefined
+  const validationKinds = unrestrictedWorkbenchProfile
+    ? SAFE_MCP_VALIDATION_COMMAND_KINDS
+    : []
+  return {
+    tools: new Set(tools),
+    commandKinds: new Set(commandKinds),
+    validationKinds: new Set(validationKinds),
+    clientWorkflowTools: new Set(clientWorkflowTools)
+  }
 }
