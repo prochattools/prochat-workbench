@@ -46,6 +46,7 @@ export type SafeCommandKind =
   | 'local_cli_github_auth_status'
   | 'local_cli_github_repo_view'
   | 'run_exact_command'
+  | 'run_repo_shell'
   | 'n8n_workflow_export'
 
 export type ExactCommandExecutable = 'node' | 'pnpm' | 'rg'
@@ -107,6 +108,7 @@ export type SafeCommandRequest = {
   patternSet?: SecurityPatternSet
   executable?: ExactCommandExecutable
   args?: string[]
+  commandText?: string
   nodeVersion?: '20'
   policy?: ExactCommandPolicy
   protectedPaths?: string[]
@@ -128,7 +130,7 @@ export type SafeCommandResult = {
   cwd: string
   executable?: string
   args?: string[]
-  shell?: false
+  shell?: boolean
   matchStatus?: 'matches_found' | 'no_matches' | 'execution_error'
   resolvedRepositoryRoot?: string
   filesChanged?: boolean
@@ -1184,6 +1186,7 @@ export function getAllowedCommandKinds(): SafeCommandKind[] {
     'local_cli_github_auth_status',
     'local_cli_github_repo_view',
     'run_exact_command',
+    'run_repo_shell',
     'n8n_workflow_export'
   ]
 }
@@ -1210,6 +1213,86 @@ function exactBlockedResult(request: SafeCommandRequest, reason: string, actualB
     riskLevel: 'medium',
     requiresConfirmation: false,
     reason
+  }
+}
+
+const REPO_SHELL_MAX_CHARS = 4_000
+const REPO_SHELL_DENY_PATTERNS: Array<[RegExp, string]> = [
+  [/\b(?:sudo|su|doas)\b/i, 'privilege escalation is not allowed'],
+  [/\b(?:diskutil|mkfs|fdisk|mount|umount|shutdown|reboot|launchctl)\b/i, 'system administration commands are not allowed'],
+  [/\bgit\s+(?:reset\s+--hard|clean\b|push\b[^\n]*--force(?:-with-lease)?|branch\s+-D)\b/i, 'destructive Git commands are not allowed'],
+  [/(?:^|[;&|])\s*rm\s+(?:-[^\n]*r|--recursive)\b/i, 'recursive deletion is not allowed'],
+  [/\b(?:eval|exec)\s*(?:\(|\s)/i, 'dynamic shell execution is not allowed'],
+  [/`|\$\(/, 'command substitution is not allowed'],
+  [/(?:BEGIN\s+(?:RSA|OPENSSH|EC)\s+PRIVATE\s+KEY|\.env(?:\.[A-Za-z0-9._-]+)?(?:\b|\/)|\.(?:pem|key|p12|pfx)(?:\b|\/))/i, 'secret material paths are not allowed']
+]
+const REPO_SHELL_NETWORK_PATTERN = /\b(?:curl|wget|ssh|scp|rsync|nc|netcat|ftp|git\s+(?:clone|fetch|pull|push)|npm\s+(?:install|publish)|pnpm\s+(?:install|add|publish)|yarn\s+(?:install|add|publish))\b/i
+
+function repoShellRedirectTargets(commandText: string): string[] {
+  const targets: string[] = []
+  const pattern = /(?:^|\s)(?:\d?>|\d?>>|&>)\s*(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/g
+  for (const match of commandText.matchAll(pattern)) targets.push(match[1] || match[2] || match[3] || '')
+  return targets
+}
+
+function assertRepoShellPathContainment(sourceRoot: string, cwd: string, value: string, label: string): void {
+  if (!value || value === '/dev/null') return
+  if (/\0|[\r\n]/.test(value)) throw new Error(`${label} contains control characters`)
+  const candidate = path.isAbsolute(value) ? path.resolve(value) : path.resolve(cwd, value)
+  const rootReal = fs.realpathSync(sourceRoot)
+  const tempRoot = process.env.TMPDIR ? path.resolve(process.env.TMPDIR) : '/tmp'
+  const insideRoot = candidate === rootReal || candidate.startsWith(`${rootReal}${path.sep}`)
+  const insideTemp = candidate === tempRoot || candidate.startsWith(`${tempRoot}${path.sep}`)
+  if (!insideRoot && !insideTemp) throw new Error(`${label} escaped the source root or authorized temporary directory`)
+}
+
+function validateRepoShellCommand(sourceRoot: string, cwd: string, commandText: string, networkAccess: boolean): void {
+  if (typeof commandText !== 'string' || commandText.trim().length === 0) throw new Error('command is required')
+  if (commandText.length > REPO_SHELL_MAX_CHARS) throw new Error(`command exceeds ${REPO_SHELL_MAX_CHARS} characters`)
+  if (/\0|[\r\n]/.test(commandText)) throw new Error('command contains prohibited control characters')
+  for (const [pattern, reason] of REPO_SHELL_DENY_PATTERNS) if (pattern.test(commandText)) throw new Error(`repository shell command blocked: ${reason}`)
+  if (!networkAccess && REPO_SHELL_NETWORK_PATTERN.test(commandText)) throw new Error('repository shell network access requires networkAccess: true')
+  const absolutePathPattern = /(?:^|[\s=(])\/(?!\/)(?:[^\s;&|"'`]+)?/g
+  for (const match of commandText.matchAll(absolutePathPattern)) {
+    const candidate = match[0].trim().replace(/^[=(]/, '')
+    if (candidate === '/dev/null') continue
+    assertRepoShellPathContainment(sourceRoot, cwd, candidate, 'absolute command path')
+  }
+  for (const target of repoShellRedirectTargets(commandText)) {
+    assertRepoShellPathContainment(sourceRoot, cwd, target, 'redirect target')
+    if (exactIsProtectedFile(normalizeRepoPath(target))) throw new Error('redirect target is a protected path')
+  }
+}
+
+async function runRepoShellCommand(request: SafeCommandRequest): Promise<SafeCommandResult> {
+  const sourceRoot = fs.realpathSync(path.resolve(request.sourceRoot))
+  const cwd = request.packageDir === '.' || !request.packageDir ? sourceRoot : assertPackageDir(sourceRoot, request.packageDir)
+  exactRealpathWithin(sourceRoot, cwd, 'packageDir')
+  const commandText = request.commandText || ''
+  validateRepoShellCommand(sourceRoot, cwd, commandText, request.networkAccess === true)
+  const before = exactGitSnapshot(sourceRoot)
+  const mandatoryProtectedBefore = exactProtectedFilesystemSnapshot(sourceRoot)
+  const result = await runProcess(request, ['/bin/sh', '-c', commandText], cwd)
+  const after = exactGitSnapshot(sourceRoot)
+  const mandatoryProtectedAfter = exactProtectedFilesystemSnapshot(sourceRoot)
+  const changedPaths = exactChangedPaths(before, after)
+  const protectedPathsChanged = exactProtectedChanges(mandatoryProtectedBefore, mandatoryProtectedAfter)
+  if (protectedPathsChanged.length > 0) {
+    result.status = 'blocked'
+    result.reason = 'mandatory_protected_path_changed'
+  }
+  return {
+    ...result,
+    commandKind: 'run_repo_shell',
+    command: ['/bin/sh', '-c', commandText],
+    shell: true,
+    executable: '/bin/sh',
+    args: ['-c', commandText],
+    resolvedRepositoryRoot: sourceRoot,
+    filesChanged: changedPaths.length > 0,
+    changedPaths,
+    protectedPathsChanged,
+    details: { shell: true, networkAccess: request.networkAccess === true }
   }
 }
 
@@ -1410,6 +1493,7 @@ const RIPGREP_BOOLEAN_FLAGS = new Set([
 ])
 
 const RIPGREP_VALUE_FLAGS = new Set(['-e', '--regexp', '-g', '--glob'])
+const RIPGREP_BOUNDED_VALUE_FLAGS = new Set(['-m', '--max-count', '--max-columns'])
 const RIPGREP_PROHIBITED_PATH_PARTS = new Set([
   '.git', 'node_modules', 'vendor', '.next', '.turbo', 'dist', 'build', 'coverage', 'out', '.buildflow', 'graphify-out'
 ])
@@ -1479,6 +1563,13 @@ function exactValidateRipgrepGlob(value: string, index: number): void {
   if (/(^|\/)\.env(?:\.|$)|\.(?:pem|key|p12|pfx)(?:$|[/*?\[\]{}])/.test(normalized)) throw new Error(`args[${index}] glob references protected files`)
 }
 
+function exactValidateRipgrepBoundedValue(flag: string, value: string, index: number): void {
+  if (!/^[1-9][0-9]*$/.test(value)) throw new Error(`args[${index}] requires a positive integer for ${flag}`)
+  const parsed = Number(value)
+  const maximum = flag === '-m' || flag === '--max-count' ? 100 : 1000
+  if (!Number.isSafeInteger(parsed) || parsed > maximum) throw new Error(`args[${index}] ${flag} exceeds the bounded maximum of ${maximum}`)
+}
+
 function exactValidateRipgrepArgs(sourceRoot: string, cwd: string, args: unknown): { args: string[]; searchPaths: string[] } {
   if (cwd !== sourceRoot) throw new Error('direct rg execution requires packageDir "." or no packageDir')
   if (!Array.isArray(args) || args.length === 0) throw new Error('rg args must be a non-empty array')
@@ -1512,6 +1603,15 @@ function exactValidateRipgrepArgs(sourceRoot: string, cwd: string, args: unknown
       if (optionValue === undefined) throw new Error(`args[${index}] requires a value`)
       if (value === '-e' || value === '--regexp') explicitPatternCount += 1
       else exactValidateRipgrepGlob(optionValue, index + 1)
+      optionArgs.push(value, optionValue)
+      index += 1
+      continue
+    }
+    if (RIPGREP_BOUNDED_VALUE_FLAGS.has(value)) {
+      if (seenPositional) throw new Error(`args[${index}] places an option after the pattern or search path`)
+      const optionValue = values[index + 1]
+      if (optionValue === undefined) throw new Error(`args[${index}] requires a value`)
+      exactValidateRipgrepBoundedValue(value, optionValue, index + 1)
       optionArgs.push(value, optionValue)
       index += 1
       continue
@@ -1643,7 +1743,7 @@ function exactProtectedFilesystemSnapshot(sourceRoot: string): Map<string, strin
     if (visited > EXACT_PROTECTED_SCAN_LIMIT) throw new Error('Protected path scan exceeded its bounded entry limit')
     const stat = fs.lstatSync(absolutePath)
     const normalized = normalizeRepoRelativePath(relativePath)
-    const protectedEntry = normalized ? exactIsProtectedFile(normalized) : false
+    const protectedEntry = normalized ? exactIsProtectedFile(normalized) && !normalized.split('/').includes('.git') : false
     if (protectedEntry) {
       snapshot.set(normalized, `${stat.mode}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'dir' : 'file'}`)
     }
@@ -1844,6 +1944,7 @@ export async function runSafeCommand(request: SafeCommandRequest): Promise<SafeC
   const sourceRoot = path.resolve(request.sourceRoot)
 
   if (request.commandKind === 'run_exact_command') return runExactCommand(request)
+  if (request.commandKind === 'run_repo_shell') return runRepoShellCommand(request)
   if (request.commandKind === 'n8n_workflow_export') return runN8nWorkflowExportCapability(request, n8nWorkflowExportDependencies)
 
   if (request.commandKind === 'verify_write_policy') return runRepoLocalTsxScript(request, 'scripts/verify-write-policy.ts')

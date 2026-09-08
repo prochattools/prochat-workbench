@@ -627,6 +627,13 @@ try {
   })
   assert.equal(fs.readFileSync(path.join(rgRepo, 'protected.txt'), 'utf8'), 'unchanged\n')
 
+  result = await runSafeCommand({ ...rgBase, args: ['-m', '5', '--max-columns', '200', '-n', alternation, 'system/agent-context'] })
+  assert.equal(result.status, 'completed')
+  assert.equal(result.matchStatus, 'matches_found')
+  assert.equal(result.args?.includes('--max-count'), false)
+  assert.equal(result.args?.includes('-m'), true)
+  assert.equal(result.args?.includes('--max-columns'), true)
+
   result = await runSafeCommand({ ...rgBase, args: ['-n', 'a-pattern-that-does-not-exist', 'system/agent-context'] })
   assert.equal(result.status, 'completed')
   assert.equal(result.matchStatus, 'no_matches')
@@ -922,7 +929,7 @@ try {
 const openapiRoute = fs.readFileSync(path.join(process.cwd(), 'apps/web/src/app/api/openapi/route.ts'), 'utf8')
 const canonicalOpenApiSchema = fs.readFileSync(path.join(process.cwd(), 'apps/web/src/lib/openapi-chatgpt.json'), 'utf8')
 assert(openapiRoute.includes("canonicalOpenApiSchema"), 'OpenAPI route must serve the canonical schema')
-for (const token of ['git_add_paths', 'git_commit', 'validate_json_files', 'run_package_script', 'run_package_test', 'run_package_test_marker', 'security_scan_paths', 'run_exact_command', 'n8n_workflow_export', 'workflowId', 'outputPath', 'executable', 'args', 'nodeVersion', 'policy', 'protectedPaths', 'requiredBranch', 'networkAccess', 'packageDir', 'scriptName', 'patternSet', 'confirmationToken']) {
+for (const token of ['git_add_paths', 'git_commit', 'validate_json_files', 'run_package_script', 'run_package_test', 'run_package_test_marker', 'security_scan_paths', 'run_exact_command', 'run_repo_shell', 'n8n_workflow_export', 'workflowId', 'outputPath', 'executable', 'args', 'command', 'nodeVersion', 'policy', 'protectedPaths', 'requiredBranch', 'networkAccess', 'packageDir', 'scriptName', 'patternSet', 'confirmationToken']) {
   assert(canonicalOpenApiSchema.includes(token), `Canonical OpenAPI schema missing ${token}`)
 }
 assert(canonicalOpenApiSchema.includes('"enum":["node","pnpm","rg"]'), 'OpenAPI exact-command executable enum must include direct rg')

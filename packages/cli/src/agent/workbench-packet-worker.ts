@@ -48,8 +48,22 @@ function recordWorkbenchPacketResult(
   }
   if (!['completed', 'failed', 'paused', 'cancelled'].includes(result.status)) return result
 
-  const run = getAgentJob(result.runId)
+  let run = getAgentJob(result.runId)
   if (!run) return result
+
+  // A goal-dispatch packet is the complete bounded goal, not merely one step
+  // of the default multi-phase roadmap. Close that run after its packet has
+  // been durably persisted so the coordinator cannot schedule another Action
+  // round for internal roadmap work.
+  if (result.status === 'completed' && packetRecord?.packet.goalDispatch && run.status === 'running') {
+    run = updateAgentJob(run.id, {
+      status: 'completed',
+      activeTaskId: undefined,
+      activePacketId: undefined,
+      summary: 'The dispatched Workbench goal completed locally with a durable terminal result.',
+      nextActions: ['Review the compact terminal result.']
+    })
+  }
 
   const failedPacketRecord = result.status === 'failed'
     ? getWorkbenchPacketRecord(result.packetId)

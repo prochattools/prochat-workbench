@@ -9,12 +9,17 @@ import { classifyParsedRunCommandRequest, parseRunCommandRouteRequest, toSafeCom
 import { executeWithWorkbenchAdmission, type WorkbenchAdmissionOptions } from './workbench-admission-orchestrator'
 import { cancelWorkbenchValidationJob, compactWorkbenchValidationJobForPublic, getWorkbenchValidationJob, getWorkbenchValidationJobResultPage, scheduleWorkbenchValidationJob, submitWorkbenchValidationJob } from './workbench-validation-jobs'
 import { runControlledWorkflowMigrationCommand, type MigrationCommandAdapterDependencies } from './n8n-workflow-migration-command-adapter'
-import { createWorkbenchRun, ensureWorkbenchActionRun, getActiveWorkbenchRun, resumeWorkbenchRun, updateAgentJob } from './agent-jobs'
+import { createWorkbenchRun, ensureWorkbenchActionRun, getActiveWorkbenchRun, getAgentJob, resumeWorkbenchRun, updateAgentJob } from './agent-jobs'
+import { dispatchWorkbenchGoal, getWorkbenchGoalTerminalResult, type WorkbenchGoalDispatchInput } from './workbench-goal-dispatch'
 import { appendAgentEvent, findOpenApprovalActivity } from './agent-events'
-import { getWorkbenchSession } from './workbench-session-store'
+import { getWorkbenchSession, type WorkbenchSessionStoreOptions } from './workbench-session-store'
 import { authorizeWorkbenchValidationJobRead, readAuthorizedWorkbenchEvidence } from './workbench-evidence-retrieval'
 import { closeWorkbenchRun } from './workbench-run-close'
 import { projectPortableActiveRunActivity } from './portable-read-handlers'
+import { Indexer } from './indexer'
+import { VaultSearcher } from './search'
+import { compileNativeGoal } from './native-goal-compiler'
+import { projectCodexProviderStatus } from './codex-provider-status'
 import { preflightWorkbenchPacket, type WorkbenchPacket } from './workbench-packets'
 import { reserveWorkbenchPacket, claimNextWorkbenchPacket, compactWorkbenchPacketLeaseRecord } from './workbench-packet-store'
 import { planWorkbenchPacketExecution } from './workbench-packet-plan'
@@ -267,6 +272,7 @@ function commandEvidenceEntries(params: {
     'type_check_web',
     'type_check_cli',
     'run_exact_command',
+    'run_repo_shell',
     'security_scan_paths',
     'verify_public_scope'
   ].includes(request.commandKind)
@@ -716,6 +722,7 @@ export type WorkbenchCommandMutationOptions = {
   getSources?: () => ReturnType<typeof getSourcesSafe>
   loadConfig?: typeof loadConfig
   migration?: Partial<MigrationCommandAdapterDependencies>
+  session?: WorkbenchSessionStoreOptions
   admission?: WorkbenchAdmissionOptions
 }
 
@@ -736,7 +743,8 @@ export async function executeWorkbenchCommandMutation(body: Payload, context: Po
   const attachCommandMetadata = (result: RouteResult): RouteResult => contextMetadata
     ? { ...result, body: { ...result.body, contextMetadata } }
     : result
-  const commandSession = routed.mode === 'session_aware' ? getWorkbenchSession(routed.sessionId) : undefined
+  const sessionOptions = options.session || options.admission?.session
+  const commandSession = routed.mode === 'session_aware' ? getWorkbenchSession(routed.sessionId, sessionOptions) : undefined
   const activityRun = routed.mode === 'session_aware'
     ? commandSession && !('ok' in commandSession) && commandSession.lockedSourceIds.includes(sourceId) && typeof commandSession.activeRunId === 'string'
       ? { id: commandSession.activeRunId }
@@ -957,7 +965,7 @@ export async function executeWorkbenchCommandMutation(body: Payload, context: Po
     operation: classifyParsedRunCommandRequest(parsed),
     operationKind: parsed.kind === 'direct' || parsed.kind === 'migration' ? parsed.request.commandKind : parsed.kind,
     execute: dispatch
-  }, options.admission)
+  }, { ...options.admission, session: sessionOptions })
   if (admitted.ok === false) return { statusCode: admitted.code === 'ADMISSION_BUDGET_REJECTED' || admitted.code === 'ADMISSION_REPOSITORY_REJECTED' ? 409 : 400, body: { ok: false, status: 'blocked', error: { code: admitted.code, message: admitted.message }, ...(contextMetadata ? { contextMetadata } : {}) } }
   return projectCommandActivity(attachCommandMetadata(admitted.result))
 }
@@ -1034,11 +1042,106 @@ async function apply(body: Payload, context: PortableExecutionContext): Promise<
   }
   const source = requireEnabledSource(sourceId)
   if (changeType === 'create_run') {
-    const result = createWorkbenchRun({ sourceId, goal: requiredString(body, 'goal'), documentationPath: typeof body.documentationPath === 'string' ? body.documentationPath : undefined, maxIterations: typeof body.maxIterations === 'number' ? body.maxIterations : undefined, autoCommit: body.autoCommit === true, autoPush: false, autonomyLevel: 'hands_off_safe' })
-    return { statusCode: 200, body: { status: 'ok', created: result.created, verified: true, run: getActiveWorkbenchRun(sourceId) || result.run } }
+    const goal = requiredString(body, 'goal')
+    const executionMode = body.executionMode === 'codex' || body.executionMode === 'direct' || body.executionMode === 'auto'
+      ? body.executionMode
+      : body.nativeDirectGoal === true ? 'direct' : 'auto'
+    if (executionMode !== 'codex' || body.nativeDirectGoal === true) {
+      const compilation = await compileNativeGoal({
+        goal,
+        sourceId,
+        sourceRoot: source.path,
+        searcher: new VaultSearcher(new Indexer([sourceId]).getDocs()),
+        paths: Array.isArray(body.nativeGoalPaths) ? body.nativeGoalPaths.filter((item): item is string => typeof item === 'string') : undefined,
+        confirmedByUser: body.confirmedByUser === true
+      })
+      if (compilation.route === 'blocked') {
+        return {
+          statusCode: 409,
+          body: {
+            status: 'blocked',
+            verified: false,
+            executionMode, providerStatus: projectCodexProviderStatus({ directCapability: true }), nativeGoal: { intent: compilation.intent, route: compilation.route, reviewMessage: compilation.reviewMessage, compilerMs: compilation.compilerMs },
+            error: { code: 'NATIVE_GOAL_REVIEW_REQUIRED', message: compilation.reviewMessage }
+          }
+        }
+      }
+      if (compilation.route === 'goal_dispatch' && compilation.dispatch) {
+        const result = dispatchWorkbenchGoal({
+          sourceId,
+          sourceRoot: source.path,
+          goal,
+          requestId: context.requestId,
+          documentationPath: typeof body.documentationPath === 'string' ? body.documentationPath : undefined,
+          maxIterations: typeof body.maxIterations === 'number' ? body.maxIterations : undefined,
+          dispatch: compilation.dispatch
+        })
+        return {
+          statusCode: result.status === 'blocked' ? 409 : 202,
+          body: {
+            ...result,
+            executionMode, nativeGoal: { intent: compilation.intent, route: compilation.route, reviewMessage: compilation.reviewMessage, compilerMs: compilation.compilerMs }
+          }
+        }
+      }
+      const roadmap = createWorkbenchRun({
+        sourceId,
+        goal,
+        documentationPath: typeof body.documentationPath === 'string' ? body.documentationPath : undefined,
+        maxIterations: typeof body.maxIterations === 'number' ? body.maxIterations : undefined,
+        autoCommit: body.autoCommit === true,
+        autoPush: false,
+        autonomyLevel: 'hands_off_safe'
+      })
+      return {
+        statusCode: 200,
+        body: {
+          status: 'ok',
+          created: roadmap.created,
+          verified: true,
+          executionMode,
+          providerStatus: projectCodexProviderStatus({ directCapability: true }),
+          run: getActiveWorkbenchRun(sourceId) || roadmap.run,
+          nativeGoal: { intent: compilation.intent, route: compilation.route, reviewMessage: compilation.reviewMessage, compilerMs: compilation.compilerMs }
+        }
+      }
+    }
+    if (body.goalDispatch && typeof body.goalDispatch === 'object' && !Array.isArray(body.goalDispatch)) {
+      const result = dispatchWorkbenchGoal({
+        sourceId,
+        sourceRoot: source.path,
+        goal,
+        requestId: context.requestId,
+        documentationPath: typeof body.documentationPath === 'string' ? body.documentationPath : undefined,
+        maxIterations: typeof body.maxIterations === 'number' ? body.maxIterations : undefined,
+        dispatch: body.goalDispatch as WorkbenchGoalDispatchInput
+      })
+      return { statusCode: result.status === 'blocked' ? 409 : 202, body: result as unknown as Record<string, unknown> }
+    }
+    const result = createWorkbenchRun({ sourceId, goal, documentationPath: typeof body.documentationPath === 'string' ? body.documentationPath : undefined, maxIterations: typeof body.maxIterations === 'number' ? body.maxIterations : undefined, autoCommit: body.autoCommit === true, autoPush: false, autonomyLevel: 'hands_off_safe' })
+    return { statusCode: 200, body: { status: 'ok', created: result.created, verified: true, executionMode, providerStatus: projectCodexProviderStatus({ directCapability: true }), run: getActiveWorkbenchRun(sourceId) || result.run } }
   }
   if (changeType === 'resume_run') {
-    resumeWorkbenchRun({ sourceId, runId: typeof body.runId === 'string' ? body.runId : undefined })
+    // Never infer an active run for a public/native lifecycle request. A
+    // missing ID can otherwise resume stale work for the correct source and
+    // make a malformed Custom GPT continuation look successful.
+    const runId = requiredString(body, 'runId')
+    const sourceRoot = requireEnabledSource(sourceId).path
+    const terminalResult = getWorkbenchGoalTerminalResult({ runId, sourceId, sourceRoot })
+    if (terminalResult) {
+      return {
+        statusCode: 200,
+        body: {
+          status: 'ok',
+          resumed: false,
+          terminal: true,
+          verified: terminalResult.status === 'completed',
+          run: getAgentJob(runId),
+          terminalResult
+        }
+      }
+    }
+    resumeWorkbenchRun({ sourceId, runId })
     return { statusCode: 200, body: { status: 'ok', resumed: true, verified: true, run: getActiveWorkbenchRun(sourceId) } }
   }
   if (changeType === 'close_run') {

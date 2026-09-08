@@ -168,6 +168,12 @@ export class VaultSearcher {
     }
   }
 
+  /** Expose the bounded document set so read handlers can merge a deterministic
+   * filesystem fallback when the persisted semantic index is unavailable. */
+  getDocs(): IndexedDoc[] {
+    return this.sourceOrder.flatMap(sourceId => this.indexesBySource.get(sourceId)?.docs || [])
+  }
+
   search(query: string, limit: number = DEFAULT_LIMIT, sourceIds?: string[]): SearchResult[] {
     return this.searchBounded(query, limit, sourceIds).results
   }

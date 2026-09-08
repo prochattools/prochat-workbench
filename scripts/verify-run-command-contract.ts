@@ -54,6 +54,18 @@ expectValid({
   policy: { denyNetworkCommands: true }
 }, 'exact rg')
 expectValid({
+  sourceId: 'workbench-example-source',
+  commandKind: 'run_repo_shell',
+  command: 'git status --short | head -n 1 && printf ready'
+}, 'owner-scoped repository shell')
+const parsedShell = parseRunCommandRequest({
+  sourceId: 'workbench-example-source',
+  commandKind: 'run_repo_shell',
+  command: 'rg -n "Workbench" packages'
+})
+assert.equal(parsedShell.ok, true)
+if (parsedShell.ok && parsedShell.kind === 'direct') assert.equal(parsedShell.request.networkAccess, false)
+expectValid({
   sourceId: 'brain',
   commandKind: 'n8n_workflow_export',
   workflowId: 'workflow-id',
@@ -180,5 +192,6 @@ expectInvalid({ sourceId: 'workbench-example-source', commandKind: 'not_allowlis
 assert.equal(new Set(RUN_WORKBENCH_DIRECT_COMMAND_KINDS).size, RUN_WORKBENCH_DIRECT_COMMAND_KINDS.length, 'command kinds must be unique')
 assert.ok(RUN_WORKBENCH_DIRECT_COMMAND_KINDS.includes('n8n_workflow_export'))
 assert.ok(RUN_WORKBENCH_DIRECT_COMMAND_KINDS.includes('n8n_workflow_migration'))
+assert.ok(RUN_WORKBENCH_DIRECT_COMMAND_KINDS.includes('run_repo_shell'))
 
 console.log('runWorkbenchCommand strict contract verification passed')

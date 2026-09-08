@@ -6,6 +6,7 @@ import { finalizeWorkbenchPacketExecution, getWorkbenchPacketRecord } from './wo
 import { advanceWorkbenchRunAfterPacket, getAgentJob, updateAgentJob } from './agent-jobs'
 import { workbenchSessionIdForRun } from './workbench-run-session'
 import { loadConfig } from './config'
+import { normalizeRepoRelativePath } from './safe-access'
 import { runSafeCommand, type SafeCommandResult } from './command-runner'
 import { appendAgentEvent, hasPacketValidationActivityEvent } from './agent-events'
 import { startLocalServer, type LocalServerHandle, type LocalServerLifecycleEvent } from './local-server-lifecycle'
@@ -13,6 +14,7 @@ import { completeWorkbenchExecutionJournal, markWorkbenchExecutionJournalStep, p
 import { planWorkbenchPacketExecution } from './workbench-packet-plan'
 import { attachWorkbenchEvidence, type WorkbenchEvidenceUnavailable } from './workbench-evidence-producers'
 import type { WorkbenchEvidenceMetadata, ValidationSelectionNode } from '@workbench/shared'
+import type { WorkbenchGoalCommand, WorkbenchGoalRead } from './workbench-packets'
 import {
   getCompactWorkbenchValidationJob,
   scheduleWorkbenchValidationJob,
@@ -31,6 +33,8 @@ export type WorkbenchPacketExecutionResult = {
   validationResults?: Array<Pick<SafeCommandResult, 'commandKind' | 'status' | 'exitCode' | 'durationMs' | 'stdout' | 'stderr'> & { evidenceRefs?: WorkbenchEvidenceMetadata[]; evidenceUnavailable?: WorkbenchEvidenceUnavailable }>
   commitResult?: Pick<SafeCommandResult, 'status' | 'exitCode' | 'stdout' | 'stderr'>
   commitHash?: string
+  readEvidence?: Array<{ mode: WorkbenchGoalRead['mode']; path: string; matches?: number; lines?: number }>
+  commandEvidence?: Array<{ commandKind: WorkbenchGoalCommand['commandKind']; status: string; exitCode: number | null; durationMs: number }>
   errors: Array<{ code: string; message: string; path?: string }>
 }
 
@@ -165,6 +169,65 @@ function verifyExactPathSet(actual: string[], expected: string[], label: string)
   if (JSON.stringify(actualSorted) !== JSON.stringify(expectedSorted)) {
     throw new Error(`${label} paths differ from packet exact paths; actual=${actualSorted.join(',')} expected=${expectedSorted.join(',')}`)
   }
+}
+
+function boundedGoalNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(numeric) ? Math.max(min, Math.min(max, Math.floor(numeric))) : fallback
+}
+
+function goalFilePath(sourceRoot: string, requestedPath: string): string {
+  const normalized = normalizeRepoRelativePath(requestedPath)
+  if (!normalized || normalized === '.') throw new Error(`Goal read path is invalid: ${requestedPath}`)
+  const resolved = path.resolve(sourceRoot, normalized)
+  const relative = path.relative(sourceRoot, resolved)
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error(`Goal read path escaped the source root: ${requestedPath}`)
+  return resolved
+}
+
+function executeGoalRead(sourceRoot: string, read: WorkbenchGoalRead): { mode: WorkbenchGoalRead['mode']; path: string; matches?: number; lines?: number } {
+  const fullPath = goalFilePath(sourceRoot, read.path)
+  const content = fs.readFileSync(fullPath, 'utf8')
+  const lines = content.split(/\r?\n/)
+  if (read.mode === 'read_range') {
+    const start = boundedGoalNumber(read.startLine, 1, 1, Math.max(1, lines.length))
+    const end = boundedGoalNumber(read.endLine, Math.min(lines.length, start + 249), start, Math.min(lines.length, start + 249))
+    return { mode: read.mode, path: normalizeRepoRelativePath(read.path)!, lines: Math.max(0, end - start + 1) }
+  }
+  if (read.mode === 'read_symbol') {
+    const symbol = String(read.symbol || '').trim()
+    const matches = lines.filter(line => line.includes(symbol)).length
+    return { mode: read.mode, path: normalizeRepoRelativePath(read.path)!, matches, lines: matches > 0 ? 1 : 0 }
+  }
+  const pattern = String(read.pattern || '')
+  const matcher = read.regex === true ? new RegExp(pattern, 'g') : undefined
+  let matches = 0
+  for (const line of lines) {
+    if (matcher) {
+      matcher.lastIndex = 0
+      if (matcher.test(line)) matches += 1
+    } else if (line.includes(pattern)) {
+      matches += 1
+    }
+    if (matches >= boundedGoalNumber(read.maxMatches, 5, 1, 10)) break
+  }
+  return { mode: read.mode, path: normalizeRepoRelativePath(read.path)!, matches }
+}
+
+async function executeGoalCommand(params: { sourceId: string; sourceRoot: string; command: WorkbenchGoalCommand }): Promise<{ commandKind: WorkbenchGoalCommand['commandKind']; status: string; exitCode: number | null; durationMs: number }> {
+  const result = await runSafeCommand({
+    sourceId: params.sourceId,
+    sourceRoot: params.sourceRoot,
+    commandKind: params.command.commandKind,
+    executable: params.command.executable,
+    args: params.command.args,
+    timeoutMs: params.command.timeoutMs,
+    networkAccess: false,
+    paths: []
+  })
+  if (result.status !== 'completed') throw new Error(`Goal command ${params.command.commandKind} failed: ${result.reason || result.stderr || result.stdout}`)
+  if (result.filesChanged === true || (result.changedPaths && result.changedPaths.length > 0)) throw new Error(`Goal command ${params.command.commandKind} changed repository files`)
+  return { commandKind: params.command.commandKind, status: result.status, exitCode: result.exitCode, durationMs: result.durationMs }
 }
 
 function syncRunOutcome(runId: string, packetId: string, status: 'completed' | 'failed', summary: string, commitHash?: string): void {
@@ -386,6 +449,8 @@ export async function executeWorkbenchPacket(params: {
   let writesPerformed = false
   let changedPaths: string[] = []
   const validationResults: NonNullable<WorkbenchPacketExecutionResult['validationResults']> = []
+  const readEvidence: NonNullable<WorkbenchPacketExecutionResult['readEvidence']> = []
+  const commandEvidence: NonNullable<WorkbenchPacketExecutionResult['commandEvidence']> = []
   let commitResult: WorkbenchPacketExecutionResult['commitResult']
   let commitHash: string | undefined
   let localServer: LocalServerHandle | undefined
@@ -422,6 +487,41 @@ export async function executeWorkbenchPacket(params: {
       sourceRoot: params.sourceRoot,
       planHash: planResult.plan.planHash
     })
+
+    for (const read of record.packet.goalDispatch?.reads || []) {
+      assertPacketControlAllowsExecution(params.packetId)
+      const evidence = executeGoalRead(params.sourceRoot, read)
+      readEvidence.push(evidence)
+      appendAgentEvent({
+        jobId: record.packet.runId,
+        sourceId: params.sourceId,
+        type: 'file_read',
+        activityKind: 'file_read',
+        packetId: record.packet.packetId,
+        taskId: record.packet.taskId,
+        paths: [evidence.path],
+        status: 'completed',
+        message: `Goal dispatch read ${evidence.path}.`
+      })
+    }
+
+    for (const command of record.packet.goalDispatch?.commands || []) {
+      assertPacketControlAllowsExecution(params.packetId)
+      const evidence = await executeGoalCommand({ sourceId: params.sourceId, sourceRoot: params.sourceRoot, command })
+      commandEvidence.push(evidence)
+      appendAgentEvent({
+        jobId: record.packet.runId,
+        sourceId: params.sourceId,
+        type: 'command_completed',
+        activityKind: 'executor_completed',
+        packetId: record.packet.packetId,
+        taskId: record.packet.taskId,
+        commandKind: command.commandKind,
+        status: evidence.status,
+        telemetry: { durationMs: evidence.durationMs },
+        message: `Goal dispatch command ${command.commandKind} completed.`
+      })
+    }
 
     for (const [index, step] of record.packet.steps.entries()) {
       assertPacketControlAllowsExecution(params.packetId)
@@ -637,7 +737,7 @@ export async function executeWorkbenchPacket(params: {
         record.exactPaths,
         'Committed'
       )
-      changedPaths = assertChangedPathsWithinAuthorization(baselineStatus, params.sourceRoot, record.exactPaths)
+      assertChangedPathsWithinAuthorization(baselineStatus, params.sourceRoot, record.exactPaths)
     }
 
     if (localServer) {
@@ -647,7 +747,7 @@ export async function executeWorkbenchPacket(params: {
     }
 
     assertPacketControlAllowsExecution(params.packetId)
-    changedPaths = assertChangedPathsWithinAuthorization(baselineStatus, params.sourceRoot, record.exactPaths)
+    assertChangedPathsWithinAuthorization(baselineStatus, params.sourceRoot, record.exactPaths)
     const finalized = finalizeWorkbenchPacketExecution({
       packetId: params.packetId,
       leaseToken: params.leaseToken,
@@ -674,6 +774,8 @@ export async function executeWorkbenchPacket(params: {
       validationResults,
       commitResult,
       commitHash,
+      readEvidence,
+      commandEvidence,
       errors: []
     }
   } catch (error) {
@@ -741,6 +843,8 @@ export async function executeWorkbenchPacket(params: {
         completedSteps,
         changedPaths,
         validationResults,
+        readEvidence,
+        commandEvidence,
         errors: [{ code: controlAction === 'pause' ? 'PACKET_PAUSED' : 'PACKET_CANCELLED', message }]
       }
     }
@@ -764,6 +868,8 @@ export async function executeWorkbenchPacket(params: {
       changedPaths,
       failedStep: completedSteps,
       validationResults,
+      readEvidence,
+      commandEvidence,
       errors: [{ code: message.startsWith('UNEXPECTED_CHANGED_PATH:') ? 'UNEXPECTED_CHANGED_PATH' : 'PACKET_EXECUTION_FAILED', message }]
     }
   }

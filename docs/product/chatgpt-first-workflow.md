@@ -33,6 +33,17 @@ Workbench Local already provides:
 
 The current friction is that users still move between ChatGPT, the Workbench dashboard, and terminal tooling for validation or external execution.
 
+### Local speed path
+
+The native Workbench application is the selected fast path for day-to-day local
+repository goals. Custom GPT remains the conversational and remote path for
+planning, explanation, oversight, and handoff. The native path is intended to
+submit the same bounded durable Workbench goal locally, then show Activity
+Ledger progress, confirmation state, and the terminal result without the
+Custom GPT Action-ingress delay. This is an additional first-party surface,
+not a replacement for the five Custom GPT Actions or a second execution
+engine.
+
 ## Product direction
 
 Workbench Local should treat ChatGPT as the primary workspace.

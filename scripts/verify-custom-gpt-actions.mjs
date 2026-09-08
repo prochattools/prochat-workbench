@@ -173,6 +173,7 @@ function ensureSchemaRules(schema) {
   for (const phrase of ['resume', 'continue', 'current state', 'read-only', 'does not start', 'include=active']) {
     assert(statusDescription.includes(phrase), `getWorkbenchStatus schema must explicitly guide ${phrase} routing`)
   }
+  assert(statusDescription.includes('known repository content'), 'getWorkbenchStatus must defer known repository content to readWorkbenchContext')
 
   const readContext = ops.find(op => op.operationId === 'readWorkbenchContext')
   const readSchema = readContext?.requestBody?.content?.['application/json']?.schema
@@ -185,6 +186,9 @@ function ensureSchemaRules(schema) {
   for (const phrase of ['Deterministic Resume Routing (MANDATORY)', 'MUST be exactly one', 'read-only `getWorkbenchStatus` call', 'include=active', 'chat history']) {
     assert(instructionsText.includes(phrase), `Custom GPT instructions must contain deterministic resume rule: ${phrase}`)
   }
+  for (const phrase of ['changeType=create_run', 'never choose `resume_run` or `close_run`', 'Never infer IDs from source']) {
+    assert(instructionsText.includes(phrase), `Custom GPT instructions must contain one-dispatch lifecycle guard: ${phrase}`)
+  }
   for (const mode of ['grep_context', 'read_range', 'read_symbol']) {
     assert(modes.includes(mode), `readWorkbenchContext schema missing focused mode: ${mode}`)
   }
@@ -194,6 +198,9 @@ function ensureSchemaRules(schema) {
   assert(readProps.before?.maximum <= 40, 'grep_context before must be capped at 40')
   assert(readProps.after?.maximum <= 60, 'grep_context after must be capped at 60')
   assert(readProps.maxMatches?.maximum <= 10, 'grep_context maxMatches must be capped at 10')
+  assert(readContext.description.includes('skip status'), 'readWorkbenchContext must skip status when the source is already known')
+  assert(readContext.description.includes('Never use runWorkbenchCommand as a generic content preflight'), 'readWorkbenchContext must own ordinary content routing')
+  assert(readProps.sourceId?.description.includes('Workbench Private maps to prochattools-workbench'), 'source routing must preserve the Workbench Private exact ID mapping')
 
   const runCommand = ops.find(op => op.operationId === 'runWorkbenchCommand')
   const commandContent = runCommand?.requestBody?.content?.['application/json']
@@ -227,6 +234,9 @@ function ensureSchemaRules(schema) {
   for (const required of ['sessionId', 'default', 'workspace', 'current', 'repo']) {
     assert(sourceDescription.includes(required), `runWorkbenchCommand sourceId guidance missing ${required}`)
   }
+  assert(sourceDescription.includes('Workbench Private maps to prochattools-workbench'), 'runWorkbenchCommand must preserve the Workbench Private exact ID mapping')
+  assert(runCommand.description.includes('not generic repository/content preflight'), 'runWorkbenchCommand must not be the generic repository content route')
+  assert(commandProps.commandKind.description.includes('Do not use commands as a generic content/status preflight'), 'runWorkbenchCommand commandKind must reject generic content preflight routing')
   assert(!Object.prototype.hasOwnProperty.call(commandContent || {}, 'examples'), 'Generated schema must not expose command examples')
   assert(commandProps.migration?.type === 'object' && commandProps.migration?.additionalProperties === false, 'Generated schema must expose an importer-safe strict migration object')
   assert(!['oneOf', 'anyOf', 'allOf'].some(keyword => Object.hasOwn(commandProps.migration || {}, keyword)), 'Generated schema must not hide migration fields behind schema composition')
@@ -533,8 +543,23 @@ function ensureWorkbenchRunModel() {
   }
   const applySchema = schema.paths?.['/api/actions/apply-file-change']?.post?.requestBody?.content?.['application/json']?.schema
   const changeTypes = applySchema?.properties?.changeType?.enum || []
-  assert(JSON.stringify(changeTypes) === JSON.stringify(['create', 'overwrite', 'patch', 'append', 'delete_file', 'move']), 'OpenAPI schema must expose only file mutation changeTypes')
-  assert(JSON.stringify(Object.keys(applySchema?.properties || {}).sort()) === JSON.stringify(['allowMultiple', 'changeType', 'confirmationToken', 'confirmedByUser', 'content', 'dryRun', 'find', 'path', 'reason', 'replace', 'sourceId', 'to'].sort()), 'applyWorkbenchFileChange must expose only file mutation properties')
+  assert(JSON.stringify(changeTypes) === JSON.stringify(['create', 'overwrite', 'patch', 'append', 'delete_file', 'move', 'create_run', 'resume_run', 'close_run']), 'OpenAPI schema must expose direct file and bounded run-lifecycle changeTypes')
+  assert(JSON.stringify(Object.keys(applySchema?.properties || {}).sort()) === JSON.stringify(['allowMultiple', 'autoCommit', 'changeType', 'confirmationToken', 'confirmedByUser', 'content', 'documentationPath', 'dryRun', 'find', 'goal', 'goalDispatch', 'maxIterations', 'path', 'reason', 'replace', 'runId', 'sourceId', 'summary', 'to'].sort()), 'applyWorkbenchFileChange must expose only bounded file/lifecycle properties')
+  const goalDispatch = applySchema?.properties?.goalDispatch
+  assert(goalDispatch?.type === 'object' && goalDispatch.additionalProperties === false, 'applyWorkbenchFileChange goalDispatch must be a strict object')
+  assert(goalDispatch.description?.includes('readOnly=true') && goalDispatch.description?.includes('steps to []'), 'goalDispatch must explain the read-only empty-steps shape')
+  assert(JSON.stringify(goalDispatch.required || []) === JSON.stringify(['version', 'expectedOutcome', 'scope', 'confirmationPolicy', 'terminalResult', 'steps']), 'goalDispatch must require its bounded dispatch manifest')
+  assert(goalDispatch.properties?.version?.enum?.[0] === 1, 'goalDispatch version must be exactly 1')
+  assert(goalDispatch.properties?.scope?.description?.includes('directory prefixes'), 'goalDispatch scope must allow bounded directory prefixes')
+  assert(goalDispatch.properties?.readOnly?.description?.includes('steps: []'), 'goalDispatch readOnly guidance must allow empty steps')
+  assert(goalDispatch.properties?.steps?.maxItems <= 5, 'goalDispatch steps must be capped at 5')
+  assert(goalDispatch.properties?.steps?.description?.includes('read-only'), 'goalDispatch steps guidance must describe read-only packets')
+  assert(goalDispatch.properties?.reads?.maxItems <= 5, 'goalDispatch reads must be capped at 5')
+  assert(goalDispatch.properties?.commands?.maxItems <= 3, 'goalDispatch commands must be capped at 3')
+  assert(goalDispatch.properties?.commit?.additionalProperties === false, 'goalDispatch commit policy must be strict')
+  for (const field of ['goal', 'runId', 'summary']) {
+    assert(applySchema?.properties?.[field], `applyWorkbenchFileChange must expose lifecycle field ${field}`)
+  }
   assert(!applySchema?.properties?.packet, 'applyWorkbenchFileChange must not expose packet state')
 
   const packetText = fs.readFileSync(path.join(ROOT, 'packages/cli/src/agent/workbench-packets.ts'), 'utf8')

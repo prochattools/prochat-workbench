@@ -96,6 +96,7 @@ const MAX_COUNTER = Number.MAX_SAFE_INTEGER
 const LOCK_WAIT_MS = 250
 const LOCK_STALE_MS = 30_000
 const COMPLETED_SESSION_RETENTION_MS = 2 * 60 * 60_000  // completed sessions older than this are pruned
+export const WORKBENCH_NONTERMINAL_SESSION_RETENTION_MS = 7 * 24 * 60 * 60_000
 
 function resolvedRoot(options?: WorkbenchSessionStoreOptions): string {
   return options?.rootDir ? path.resolve(options.rootDir) : getConfigDir()
@@ -230,11 +231,7 @@ function persistStore(store: WorkbenchSessionStore, options?: WorkbenchSessionSt
   const target = storePath(options)
   fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 })
   const maxRecords = Math.max(10, Math.min(options?.maxRecords || DEFAULT_MAX_RECORDS, 2000))
-  const cutoffMs = Date.parse(nowIso(options)) - COMPLETED_SESSION_RETENTION_MS
-  const sessions = [...store.sessions]
-    .filter(session => session.status !== 'completed' || Date.parse(session.updatedAt) > cutoffMs)
-    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-    .slice(-maxRecords)
+  const sessions = retainBoundedSessions(store.sessions, options, maxRecords)
   const payload: WorkbenchSessionStore = {
     version: WORKBENCH_SESSION_STORE_VERSION,
     updatedAt: nowIso(options),
@@ -244,6 +241,32 @@ function persistStore(store: WorkbenchSessionStore, options?: WorkbenchSessionSt
   fs.writeFileSync(temporary, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
   fs.renameSync(temporary, target)
   fs.chmodSync(target, 0o600)
+}
+
+function retainBoundedSessions(records: WorkbenchSessionRecord[], options: WorkbenchSessionStoreOptions | undefined, maxRecords: number): WorkbenchSessionRecord[] {
+  const nowMs = Date.parse(nowIso(options))
+  const completedCutoffMs = nowMs - COMPLETED_SESSION_RETENTION_MS
+  const nonterminalCutoffMs = nowMs - WORKBENCH_NONTERMINAL_SESSION_RETENTION_MS
+  const eligible = [...records].filter(session => {
+    const updatedMs = Date.parse(session.updatedAt)
+    if (session.status === 'active') return true
+    if (session.status === 'completed') return updatedMs > completedCutoffMs
+    return updatedMs > nonterminalCutoffMs
+  })
+  // Active sessions are retained ahead of historical records. In the
+  // impossible-but-bounded case where more active sessions exist than the
+  // configured capacity, keep the newest active bindings and never allow the
+  // store to grow without bound.
+  const active = eligible
+    .filter(session => session.status === 'active')
+    .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt) || left.sessionId.localeCompare(right.sessionId))
+    .slice(-maxRecords)
+  const inactive = eligible
+    .filter(session => session.status !== 'active')
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.sessionId.localeCompare(right.sessionId))
+  return active.length >= maxRecords
+    ? active
+    : [...active, ...inactive.slice(-(maxRecords - active.length))]
 }
 
 function acquireLock(options?: WorkbenchSessionStoreOptions): number | undefined {
@@ -432,4 +455,23 @@ export function recoverWorkbenchSessions(options?: WorkbenchSessionStoreOptions)
     ok: true,
     sessions: store.sessions.filter(session => session.status !== 'completed')
   }
+}
+
+export function pruneWorkbenchSessions(options?: WorkbenchSessionStoreOptions):
+  | { ok: true; scanned: number; deleted: number; retainedActive: number }
+  | WorkbenchSessionStoreFailure {
+  const result = withLock(options, store => {
+    const before = store.sessions.length
+    const maxRecords = Math.max(10, Math.min(options?.maxRecords || DEFAULT_MAX_RECORDS, 2000))
+    const retained = retainBoundedSessions(store.sessions, options, maxRecords)
+    store.sessions = retained
+    if (retained.length !== before) persistStore(store, options)
+    return {
+      ok: true as const,
+      scanned: before,
+      deleted: before - retained.length,
+      retainedActive: retained.filter(session => session.status === 'active').length
+    }
+  })
+  return result
 }

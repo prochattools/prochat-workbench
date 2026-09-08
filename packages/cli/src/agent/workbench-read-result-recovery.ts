@@ -10,17 +10,22 @@ import {
   type WorkbenchEvidenceOwner,
   type WorkbenchEvidenceRecord
 } from '@workbench/shared'
+import { getWorkbenchSession, type WorkbenchSessionStoreOptions } from './workbench-session-store'
 
 export const WORKBENCH_READ_RESULT_RECOVERY_VERSION = 1 as const
 const DEFAULT_MAX_RECORDS = 128
 const DEFAULT_MAX_STORE_BYTES = 1024 * 1024
 const DEFAULT_STORE_PATH = path.join(getConfigDir(), 'workbench-read-results.json')
+const RECONCILED_RETENTION_MS = 24 * 60 * 60_000
+const TERMINAL_PENDING_RETENTION_MS = 24 * 60 * 60_000
+const PAUSED_PENDING_RETENTION_MS = 7 * 24 * 60 * 60_000
 
 export type WorkbenchReadResultRecoveryOptions = {
   storePath?: string
   now?: () => Date
   maxRecords?: number
   maxStoreBytes?: number
+  sessionStore?: WorkbenchSessionStoreOptions
 }
 
 export type WorkbenchReadResultRecoveryIdentity = {
@@ -146,7 +151,7 @@ function readStore(options: WorkbenchReadResultRecoveryOptions = {}): Store | Re
       || typeof parsed.updatedAt !== 'string'
       || !Number.isFinite(Date.parse(parsed.updatedAt))
       || !Array.isArray(parsed.records)
-      || parsed.records.length > configured.maxRecords
+      || parsed.records.length > DEFAULT_MAX_RECORDS * 4
       || parsed.records.some(record => !validRecord(record))
       || new Set(parsed.records.map(record => (record as WorkbenchReadResultRecoveryRecord).recoveryId)).size !== parsed.records.length) {
       return { ok: false, code: 'READ_RESULT_RECOVERY_UNAVAILABLE', message: 'The read-result recovery store is invalid.' }
@@ -163,27 +168,51 @@ function readStore(options: WorkbenchReadResultRecoveryOptions = {}): Store | Re
   }
 }
 
+function ageMs(value: string, nowMs: number): number {
+  const createdMs = Date.parse(value)
+  return Number.isFinite(createdMs) ? Math.max(0, nowMs - createdMs) : Number.POSITIVE_INFINITY
+}
+
+function pendingRecordIsAbandoned(record: WorkbenchReadResultRecoveryRecord, nowMs: number, options: WorkbenchReadResultRecoveryOptions): boolean {
+  if (record.status !== 'pending') return false
+  const sessionId = record.owner.sessionId || record.identityDigest
+  const session = record.owner.sessionId ? getWorkbenchSession(record.owner.sessionId, options.sessionStore) : undefined
+  if (!session || 'ok' in session) return false
+  if (session.status === 'active') return false
+  const sessionAge = ageMs(session.updatedAt, nowMs)
+  const recordAge = ageMs(record.updatedAt, nowMs)
+  const retention = session.status === 'paused' ? PAUSED_PENDING_RETENTION_MS : TERMINAL_PENDING_RETENTION_MS
+  return sessionId.length > 0 && sessionAge >= retention && recordAge >= retention
+}
+
+function recordIsExpiredOrAbandoned(record: WorkbenchReadResultRecoveryRecord, nowMs: number, options: WorkbenchReadResultRecoveryOptions): boolean {
+  if (record.status === 'reconciled') return ageMs(record.updatedAt, nowMs) >= RECONCILED_RETENTION_MS
+  return pendingRecordIsAbandoned(record, nowMs, options)
+}
+
+function compactRecords(store: Store, options: WorkbenchReadResultRecoveryOptions): void {
+  const configured = limits(options)
+  const nowMs = Date.parse(nowIso(options))
+  let retained = store.records.filter(record => !recordIsExpiredOrAbandoned(record, nowMs, options))
+  const serializedSize = (records: WorkbenchReadResultRecoveryRecord[]) => Buffer.byteLength(JSON.stringify({ version: WORKBENCH_READ_RESULT_RECOVERY_VERSION, updatedAt: nowIso(options), records }), 'utf8')
+  const evictable = () => retained
+    .map((record, index) => ({ record, index }))
+    .filter(item => item.record.status === 'reconciled' || pendingRecordIsAbandoned(item.record, nowMs, options))
+    .sort((left, right) => Date.parse(left.record.updatedAt) - Date.parse(right.record.updatedAt) || left.record.recoveryId.localeCompare(right.record.recoveryId))
+
+  while (retained.length > configured.maxRecords || serializedSize(retained) > configured.maxStoreBytes) {
+    const next = evictable()[0]
+    if (!next) throw new Error('recovery store size limit exceeded')
+    retained.splice(next.index, 1)
+  }
+  store.records = retained
+}
+
 function persistStore(store: Store, options: WorkbenchReadResultRecoveryOptions): void {
   const file = target(options)
   const configured = limits(options)
-  const retained = [...store.records]
-    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt) || a.recoveryId.localeCompare(b.recoveryId))
-    .slice(-configured.maxRecords)
-  const updatedAt = nowIso(options)
-  const serializedSize = (records: WorkbenchReadResultRecoveryRecord[]) => Buffer.byteLength(JSON.stringify({ version: WORKBENCH_READ_RESULT_RECOVERY_VERSION, updatedAt, records }), 'utf8')
-
-  // Reconciled results are only a bounded fallback for already-published
-  // evidence. Preserve pending records, but evict the oldest reconciled
-  // records when their retained payloads would otherwise make the store
-  // unwritable. This keeps a large historical result set from blocking new
-  // recovery records while never silently discarding an unreconciled result.
-  while (serializedSize(retained) > configured.maxStoreBytes) {
-    const evictIndex = retained.findIndex(record => record.status === 'reconciled')
-    if (evictIndex === -1) throw new Error('recovery store size limit exceeded')
-    retained.splice(evictIndex, 1)
-  }
-
-  const next: Store = { version: WORKBENCH_READ_RESULT_RECOVERY_VERSION, updatedAt, records: retained }
+  compactRecords(store, options)
+  const next: Store = { version: WORKBENCH_READ_RESULT_RECOVERY_VERSION, updatedAt: nowIso(options), records: [...store.records].sort((a, b) => a.updatedAt.localeCompare(b.updatedAt) || a.recoveryId.localeCompare(b.recoveryId)) }
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
   const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`
   try {
@@ -258,7 +287,6 @@ export function persistWorkbenchReadResult(params: PersistWorkbenchReadResult, o
       createdAt,
       updatedAt: createdAt
     }
-    if (store.records.length >= limits(options).maxRecords) return { ok: false, code: 'READ_RESULT_RECOVERY_FULL', message: 'The read-result recovery store reached its bounded capacity.' }
     store.records.push(record)
     return { record, reused: false }
   })
@@ -304,4 +332,21 @@ export function readWorkbenchReadResultAsEvidence(evidenceId: string, options: W
   const withoutIntegrity = base
   const record = WorkbenchEvidenceRecordSchema.safeParse({ ...withoutIntegrity, integritySha256: sha256(stableSerialize(withoutIntegrity)) })
   return record.success ? record.data : undefined
+}
+
+export function pruneWorkbenchReadResultRecovery(options: WorkbenchReadResultRecoveryOptions = {}):
+  | { ok: true; scanned: number; deleted: number; pending: number; reconciled: number }
+  | ReadResultRecoveryFailure {
+  const result = withLock(options, store => {
+    const before = store.records.length
+    compactRecords(store, options)
+    return {
+      ok: true as const,
+      scanned: before,
+      deleted: before - store.records.length,
+      pending: store.records.filter(record => record.status === 'pending').length,
+      reconciled: store.records.filter(record => record.status === 'reconciled').length
+    }
+  })
+  return result
 }

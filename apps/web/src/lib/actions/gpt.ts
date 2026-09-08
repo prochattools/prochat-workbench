@@ -123,7 +123,7 @@ export function sourceSelectionRequired(sourceId: unknown) {
   return {
     code: 'SOURCE_SELECTION_REQUIRED',
     message: `sourceId "${normalized}" is a placeholder, not a configured Workbench source.`,
-    details: 'Use getWorkbenchStatus with include=sources, then retry with one exact enabled source ID such as brain.',
+    details: 'Use getWorkbenchStatus with include=sources only when the requested repository label cannot be resolved, then retry with the exact enabled ID returned for that repository. Never substitute another repository.',
     recovery: [
       'Call getWorkbenchStatus with include=sources.',
       'Choose one exact enabled source ID from the response.',
@@ -1351,22 +1351,30 @@ export async function dispatchWorkbenchFileChange(body: Record<string, unknown>,
       goal: body.goal,
       documentationPath: body.documentationPath,
       maxIterations: body.maxIterations,
-      autoCommit: body.autoCommit
+      autoCommit: body.autoCommit,
+      ...(body.goalDispatch && typeof body.goalDispatch === 'object' ? { goalDispatch: body.goalDispatch } : {})
     }, userToken, transportOptions)
-    const run = (result as { run?: { id?: string; sessionId?: string; activeTask?: { title?: string } } }).run
+    const goalDispatchResult = result as { status?: string; terminalResult?: { status?: string; changedFiles?: string[]; commit?: { hash?: string } }; run?: { id?: string; sessionId?: string; activeTask?: { title?: string } } }
+    const run = goalDispatchResult.run
+    const dispatched = Boolean(body.goalDispatch)
+    const goalDispatchInput = body.goalDispatch as { commit?: { enabled?: boolean } } | undefined
     return withActivity(result as Record<string, unknown>, makeActivity({
       operationId: 'applyWorkbenchFileChange',
-      phase: 'planning',
-      actionLabel: 'Created Workbench run',
-      userMessage: run?.id ? `Workbench prepared run ${run.id}.` : 'Workbench returned the existing active run.',
+      phase: goalDispatchResult.status === 'blocked' ? 'blocked' : goalDispatchResult.terminalResult?.status === 'completed' ? 'completed' : dispatched ? 'starting' : 'planning',
+      actionLabel: dispatched ? 'Dispatched Workbench goal' : 'Created Workbench run',
+      userMessage: goalDispatchResult.status === 'blocked'
+        ? 'Workbench blocked the goal before any repository write.'
+        : dispatched
+          ? goalDispatchResult.terminalResult?.status === 'completed'
+            ? 'Workbench completed the dispatched repository goal locally.'
+            : 'Workbench accepted the complete goal and is executing it locally.'
+          : run?.id ? 'Workbench prepared the requested run.' : 'Workbench returned the existing active run.',
       sourceId: typeof body.sourceId === 'string' ? body.sourceId : undefined,
-      riskLevel: 'low',
+      changedPaths: goalDispatchResult.terminalResult?.changedFiles,
+      riskLevel: goalDispatchInput?.commit?.enabled ? 'medium' : 'low',
       requiresConfirmation: false,
-      verified: true,
-      provenFacts: run?.sessionId ? [`Active session ID: ${run.sessionId}`] : undefined,
-      nextStep: run?.sessionId
-        ? `Use session ${run.sessionId} for every command in this run.`
-        : run?.activeTask?.title ? `Continue active task: ${run.activeTask.title}.` : 'Read active_run and continue the persisted goal.'
+      verified: goalDispatchResult.status !== 'blocked',
+      nextStep: dispatched ? 'Wait for the durable Workbench result; do not issue per-command Actions.' : run?.activeTask?.title ? `Continue the active task: ${run.activeTask.title}.` : 'Read the active run and continue the persisted goal.'
     }))
   }
 

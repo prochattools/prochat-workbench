@@ -210,7 +210,14 @@ const normalizeDirectRequest = (record: Record<string, unknown>): DirectRunComma
         policy: optionalPolicy(record),
         protectedPaths: optionalStrings(record, 'protectedPaths'),
         requiredBranch: optionalString(record, 'requiredBranch'),
-        networkAccess: optionalBoolean(record, 'networkAccess')
+        networkAccess: optionalBoolean(record, 'networkAccess') ?? false
+      }
+    case 'run_repo_shell':
+      return {
+        ...base,
+        packageDir: optionalString(record, 'packageDir'),
+        commandText: requiredString(record, 'command'),
+        networkAccess: optionalBoolean(record, 'networkAccess') ?? false
       }
     case 'n8n_workflow_export':
       return {

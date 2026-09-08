@@ -59,6 +59,27 @@ It keeps ChatGPT as the main interface while your own machine remains the source
 
 The result is a ChatGPT-first workflow for real local projects.
 
+For the fastest day-to-day repository work, the native Workbench application
+is the selected local goal surface. Choose a repository, enter a natural-
+language goal in New Goal, and follow the local Activity Ledger and terminal
+result. The compact execution selector is persisted per owner:
+
+- **Auto** chooses the fastest safe local path and keeps Codex optional.
+- **Direct** runs bounded deterministic work locally without a Codex call.
+- **Codex** explicitly prefers the existing governed Codex provider path.
+
+Read-only goals use a bounded deterministic compiler and the existing durable
+goal-dispatch lifecycle. A confirmed exact replacement can also perform one
+bounded edit, validate it, and create one exact scoped commit when the owner
+enables commit-after-validation; push and release intent are never inferred.
+Complex changes remain behind the governed review path when Direct cannot prove
+the scope or transformation. If Codex is rate-limited or unavailable, Auto
+continues with Direct where safe and reports the result in natural language.
+This local path bypasses Custom GPT Action-ingress latency while reusing the
+same guarded Workbench execution architecture. Custom GPT remains the
+supported conversational and remote path for planning, explanation,
+oversight, and handoff.
+
 ## What you can build with it
 
 ProChat Workbench is useful for much more than asking questions about a codebase.
@@ -163,7 +184,10 @@ A write is not considered successful unless Workbench verifies it on disk.
 
 ### Safe command runner
 
-Workbench can run repo-local commands through a strict allowlist.
+Workbench can run repo-local commands through an owner-scoped repository shell
+with a small high-risk deny boundary. The selected source root remains the
+execution and audit boundary; normal repository tooling is not hardcoded into
+another executable allowlist.
 
 Supported command families include:
 
@@ -180,11 +204,22 @@ Supported command families include:
 
 Direct `rg` execution is read-only and structured. Regex alternation such as `capture/inbox|capture/failed|router/` remains one argv element, execution always uses `shell:false`, and shell operators, subprocess/preprocessor options, traversal, prohibited paths, writes, and network access remain blocked. A no-match exit is reported as completed evidence rather than a failed command.
 
+`run_repo_shell` is available through the existing `runWorkbenchCommand` Action
+for owner-scoped repository work. It supports normal pipelines, `&&`/`||`,
+environment assignments in a redacted task environment, globs, and redirects
+only within the selected source root or authorized temporary directories.
+Absolute paths outside those roots, secret/private-key paths, recursive
+deletion, privilege escalation, destructive Git operations, and network tools
+without explicit `networkAccess:true` are blocked. The command, bounded output,
+changed paths, protected-path changes, timeout, and exit status are recorded.
+
 Command responses project verified evidence from the runner, including the executable, exact `args`, `shell`, match status, resolved repository root, changed paths, protected-path changes, bounded output, and exit status. These fields are evidence, not synthesized success claims.
 
 Confirmation-gated operations return `needs_confirmation` and a backend-issued token. Do not retry with guessed tokens or bypass the gate. The fixed `n8n_workflow_export` capability is limited to the Brain source, one approved workflow, one credential-abstracting wrapper invocation, and one rollback artifact; it does not update, activate, delete, invoke, or deploy workflows.
 
-Workbench does **not** expose arbitrary shell execution. More command capability should be added as named, source-relative command kinds instead of unrestricted terminal access.
+Workbench does not expose an unbounded host terminal. Repository shell access
+is source-root scoped, owner-bound, bounded, redacted, audited, and subject to
+the narrow high-risk deny boundary above.
 
 Named security scans use syntax-aware handling for JavaScript and TypeScript: inert comments, strings, fixtures, and source-inspection assertions are ignored, while executable `fetch` calls, prohibited clients/imports, and high-confidence network behavior remain findings. Results are projected into bounded, redacted evidence.
 
@@ -221,6 +256,18 @@ Open-ended reasoning remains with ChatGPT. Workbench may persist goals, runs,
 packets, checkpoints, validation evidence, and bounded continuation state so
 deterministic local work can resume safely without turning the public action
 surface into a long-running request.
+
+For a substantial repository request, the Custom GPT can send one bounded
+`goalDispatch` manifest with the exact source, bounded file/directory scope, reads, local commands,
+edits, validation, and explicitly authorized commit intent. A strictly
+read-only goal sets `readOnly: true`, supplies bounded reads or commands, and
+uses `steps: []`. Workbench persists
+that goal, executes the internal repository work locally, and projects one
+compact natural-language terminal result. This keeps local orchestration,
+repo-shell work, validation, and Git inside the durable Workbench run instead
+of requiring a separate Custom GPT Action for each internal step. Long jobs use
+durable state and a single result retrieval when technically necessary; they
+do not use Action polling or heartbeat calls.
 
 ### Persistent resume and handoff
 

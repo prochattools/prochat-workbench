@@ -27,6 +27,8 @@ export type WorkbenchPacketCompactResult = {
     evidenceRefs?: WorkbenchEvidenceMetadata[]
     evidenceUnavailable?: WorkbenchEvidenceUnavailable
   }>
+  readEvidence: Array<{ mode: string; path: string; matches?: number; lines?: number }>
+  commandEvidence: Array<{ commandKind: string; status: string; exitCode: number | null; durationMs: number }>
   commitHash?: string
   errors: Array<{ code: string; message: string; path?: string }>
   recordedAt: string
@@ -129,6 +131,8 @@ export function recordWorkbenchPacketResult(params: {
       evidenceRefs: item.evidenceRefs,
       evidenceUnavailable: item.evidenceUnavailable
     })),
+    readEvidence: (execution?.readEvidence || []).slice(0, 5).map(item => ({ ...item })),
+    commandEvidence: (execution?.commandEvidence || []).slice(0, 3).map(item => ({ ...item })),
     commitHash: execution?.commitHash,
     errors: [
       ...(execution?.errors || []),

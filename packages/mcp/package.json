@@ -1,6 +1,6 @@
 {
   "name": "@workbench/mcp",
-  "version": "1.3.16-beta",
+  "version": "1.3.18-beta",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",

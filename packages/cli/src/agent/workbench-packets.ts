@@ -32,6 +32,46 @@ export type WorkbenchPacketCommitPolicy = {
   body?: string
 }
 
+export type WorkbenchGoalRead = {
+  mode: 'read_range' | 'read_symbol' | 'grep_context'
+  path: string
+  pattern?: string
+  regex?: boolean
+  symbol?: string
+  startLine?: number
+  endLine?: number
+  before?: number
+  after?: number
+  maxMatches?: number
+}
+
+export type WorkbenchGoalCommand = {
+  commandKind: 'git_status_short' | 'git_diff_name_only' | 'git_log_latest' | 'run_exact_command'
+  executable?: 'rg'
+  args?: string[]
+  timeoutMs?: number
+}
+
+export type WorkbenchGoalDispatch = {
+  version: 1
+  expectedOutcome: string
+  scope: string[]
+  knownFiles?: string[]
+  knownSymbols?: string[]
+  constraints?: string[]
+  nonGoals?: string[]
+  stopConditions?: string[]
+  confirmationPolicy: 'none' | 'single_exact'
+  confirmedByUser?: boolean
+  terminalResult: {
+    style: 'natural_language'
+    include: Array<'summary' | 'changed_files' | 'validation' | 'commit' | 'warnings' | 'blocker'>
+  }
+  reads?: WorkbenchGoalRead[]
+  commands?: WorkbenchGoalCommand[]
+  readOnly?: boolean
+}
+
 export type WorkbenchPacket = {
   version: typeof WORKBENCH_PACKET_SCHEMA_VERSION
   runId: string
@@ -43,6 +83,7 @@ export type WorkbenchPacket = {
   planDigest?: string
   goalSummary: string
   expectedHead: string
+  goalDispatch?: WorkbenchGoalDispatch
   steps: WorkbenchPacketStep[]
   capabilities?: string[]
   localServer?: LocalServerDeclaration
@@ -62,6 +103,51 @@ export type WorkbenchPacketPreflightResult = {
   currentHead?: string
   exactPaths?: string[]
   errors: Array<{ code: string; message: string; path?: string }>
+}
+
+function normalizeGoalPath(value: string): string {
+  const raw = String(value || '').replace(/\\/g, '/')
+  if (raw.startsWith('/') || /^[A-Za-z]:\//.test(raw)) return ''
+  const normalized = normalizeRepoRelativePath(raw).replace(/\/+$/, '')
+  if (!normalized || normalized === '.' || normalized.split('/').includes('..')) return ''
+  return normalized
+}
+
+/**
+ * A goal scope may name an exact file or a bounded repository-relative
+ * directory prefix. Prefix matching is segment-aware so `src/app` never
+ * authorizes `src/application`.
+ */
+export function isGoalPathWithinScope(scopePaths: readonly string[], targetPath: string): boolean {
+  const normalizedTarget = normalizeGoalPath(targetPath)
+  if (!normalizedTarget) return false
+  return scopePaths.some(scopePath => {
+    const normalizedScope = normalizeGoalPath(scopePath)
+    return Boolean(normalizedScope && (normalizedTarget === normalizedScope || normalizedTarget.startsWith(`${normalizedScope}/`)))
+  })
+}
+
+function goalRipgrepSearchPaths(args: readonly string[]): string[] {
+  const positional: string[] = []
+  let explicitPattern = false
+  const valueFlags = new Set(['-e', '--regexp', '-g', '--glob', '-m', '--max-count', '--max-columns'])
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]
+    if (valueFlags.has(value)) {
+      if (value === '-e' || value === '--regexp') {
+      explicitPattern = true
+      }
+      index += 1
+      continue
+    }
+    if (value === '-g' || value === '--glob') {
+      index += 1
+      continue
+    }
+    if (value.startsWith('-') || value.startsWith('--')) continue
+    positional.push(value)
+  }
+  return explicitPattern ? positional : positional.slice(1)
 }
 
 const MAX_PACKET_STEPS = 5
@@ -117,8 +203,42 @@ export function preflightWorkbenchPacket(params: {
   if (packet.planId !== undefined && !SAFE_ID.test(String(packet.planId || ''))) errors.push({ code: 'PLAN_ID_INVALID', message: 'planId must be a bounded compiled-plan identity' })
   if (packet.planDigest !== undefined && !/^[0-9a-f]{64}$/i.test(String(packet.planDigest || ''))) errors.push({ code: 'PLAN_DIGEST_INVALID', message: 'planDigest must be a SHA-256 digest' })
   if (!SAFE_HEAD.test(String(packet.expectedHead || ''))) errors.push({ code: 'EXPECTED_HEAD_INVALID', message: 'expectedHead must be a Git commit hash' })
-  if (!Array.isArray(packet.steps) || packet.steps.length < 1 || packet.steps.length > MAX_PACKET_STEPS) {
-    errors.push({ code: 'PACKET_STEP_COUNT_INVALID', message: `packet must contain 1-${MAX_PACKET_STEPS} steps` })
+  if (!Array.isArray(packet.steps) || packet.steps.length > MAX_PACKET_STEPS || (packet.steps.length < 1 && !(packet.goalDispatch?.readOnly === true && ((packet.goalDispatch.reads?.length || 0) > 0 || (packet.goalDispatch.commands?.length || 0) > 0)))) {
+    errors.push({ code: 'PACKET_STEP_COUNT_INVALID', message: `packet must contain 1-${MAX_PACKET_STEPS} steps unless it is a read-only goal packet with bounded reads or commands` })
+  }
+  const goalScope = packet.goalDispatch && Array.isArray(packet.goalDispatch.scope)
+    ? packet.goalDispatch.scope
+    : undefined
+  if (packet.goalDispatch) {
+    if (packet.goalDispatch.version !== 1) errors.push({ code: 'GOAL_DISPATCH_VERSION_UNSUPPORTED', message: 'goal dispatch version must be 1' })
+    if (!String(packet.goalDispatch.expectedOutcome || '').trim()) errors.push({ code: 'GOAL_DISPATCH_OUTCOME_REQUIRED', message: 'goal dispatch expectedOutcome is required' })
+    if (!Array.isArray(packet.goalDispatch.scope) || packet.goalDispatch.scope.length < 1 || packet.goalDispatch.scope.length > 20) errors.push({ code: 'GOAL_DISPATCH_SCOPE_INVALID', message: 'goal dispatch scope must contain 1-20 paths' })
+    for (const scopedPath of packet.goalDispatch.scope || []) {
+      if (!normalizeGoalPath(scopedPath)) errors.push({ code: 'GOAL_DISPATCH_SCOPE_PATH_INVALID', message: 'goal dispatch scope paths must be repository-relative files or bounded directory prefixes', path: scopedPath })
+    }
+    if (!['none', 'single_exact'].includes(packet.goalDispatch.confirmationPolicy)) errors.push({ code: 'GOAL_DISPATCH_CONFIRMATION_POLICY_INVALID', message: 'goal dispatch confirmation policy is invalid' })
+    if (packet.goalDispatch.terminalResult?.style !== 'natural_language') errors.push({ code: 'GOAL_DISPATCH_TERMINAL_RESULT_INVALID', message: 'goal dispatch terminal result must use natural_language style' })
+    if ((packet.goalDispatch.reads?.length || 0) > 5) errors.push({ code: 'GOAL_DISPATCH_READ_COUNT_INVALID', message: 'goal dispatch may contain at most 5 bounded reads' })
+    for (const read of packet.goalDispatch.reads || []) {
+      const normalizedReadPath = normalizeGoalPath(read.path)
+      if (!normalizedReadPath) errors.push({ code: 'GOAL_DISPATCH_READ_PATH_INVALID', message: 'goal dispatch read paths must be repository-relative', path: read.path })
+      else if (!isGoalPathWithinScope(goalScope || [], normalizedReadPath)) errors.push({ code: 'GOAL_DISPATCH_READ_OUTSIDE_SCOPE', message: 'goal dispatch read path must be inside the declared scope', path: normalizedReadPath })
+      if (read.mode === 'read_symbol' && !String(read.symbol || '').trim()) errors.push({ code: 'GOAL_DISPATCH_SYMBOL_REQUIRED', message: 'read_symbol requires symbol', path: read.path })
+      if (read.mode === 'grep_context' && !String(read.pattern || '').trim()) errors.push({ code: 'GOAL_DISPATCH_PATTERN_REQUIRED', message: 'grep_context requires pattern', path: read.path })
+    }
+    if ((packet.goalDispatch.commands?.length || 0) > 3) errors.push({ code: 'GOAL_DISPATCH_COMMAND_COUNT_INVALID', message: 'goal dispatch may contain at most 3 bounded read-only commands' })
+    for (const command of packet.goalDispatch.commands || []) {
+      if (command.commandKind === 'run_exact_command' && (command.executable !== 'rg' || !Array.isArray(command.args) || command.args.length === 0)) {
+        errors.push({ code: 'GOAL_DISPATCH_COMMAND_INVALID', message: 'run_exact_command goal commands are limited to rg with structured args' })
+      }
+      if (command.commandKind === 'run_exact_command' && command.executable === 'rg' && Array.isArray(command.args)) {
+        for (const searchPath of goalRipgrepSearchPaths(command.args)) {
+          if (!isGoalPathWithinScope(goalScope || [], searchPath)) {
+            errors.push({ code: 'GOAL_DISPATCH_COMMAND_OUTSIDE_SCOPE', message: 'goal dispatch search path must be inside the declared scope', path: searchPath })
+          }
+        }
+      }
+    }
   }
   if (packet.validation && (!Array.isArray(packet.validation) || packet.validation.length > MAX_PACKET_VALIDATIONS)) {
     errors.push({ code: 'PACKET_VALIDATION_COUNT_INVALID', message: `packet may contain at most ${MAX_PACKET_VALIDATIONS} validation commands` })
@@ -188,11 +308,12 @@ export function preflightWorkbenchPacket(params: {
   const exactPaths: string[] = []
   const seenPaths = new Set<string>()
   for (const step of Array.isArray(packet.steps) ? packet.steps : []) {
-    const normalizedPath = normalizeRepoRelativePath(step.path)
+    const normalizedPath = normalizeGoalPath(step.path)
     if (!normalizedPath) {
       errors.push({ code: 'STEP_PATH_INVALID', message: 'step path must be repo-relative', path: step.path })
       continue
     }
+    if (goalScope && !isGoalPathWithinScope(goalScope, normalizedPath)) errors.push({ code: 'GOAL_DISPATCH_PATH_OUTSIDE_SCOPE', message: 'goal dispatch step path must be inside the declared scope', path: normalizedPath })
     if (seenPaths.has(normalizedPath)) errors.push({ code: 'DUPLICATE_STEP_PATH', message: 'packet may reference each primary path only once', path: normalizedPath })
     seenPaths.add(normalizedPath)
     exactPaths.push(normalizedPath)
@@ -215,9 +336,12 @@ export function preflightWorkbenchPacket(params: {
     }
 
     if (step.to) {
-      const normalizedTarget = normalizeRepoRelativePath(step.to)
+      const normalizedTarget = normalizeGoalPath(step.to)
       if (!normalizedTarget) errors.push({ code: 'MOVE_TARGET_INVALID', message: 'move target must be repo-relative', path: step.to })
-      else exactPaths.push(normalizedTarget)
+      else {
+        if (goalScope && !isGoalPathWithinScope(goalScope, normalizedTarget)) errors.push({ code: 'GOAL_DISPATCH_PATH_OUTSIDE_SCOPE', message: 'goal dispatch move target must be inside the declared scope', path: normalizedTarget })
+        exactPaths.push(normalizedTarget)
+      }
     }
   }
 

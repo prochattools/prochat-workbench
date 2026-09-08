@@ -24,7 +24,7 @@ import { GPT_ACTION_DEFAULT_FILE_BYTES, GPT_ACTION_RESPONSE_BUDGET_BYTES } from 
 import { prepareTaskContext } from './prepare-task-context'
 import { handleFocusedRead } from './focused-read'
 import { handleGraphContextRouted } from './graph-context-router'
-import { createPortableReadHandlers, isSourceSearchReady } from './portable-read-handlers'
+import { createPortableReadHandlers, findLatestTerminalWorkbenchRun, isSourceSearchReady } from './portable-read-handlers'
 import { executeWorkbenchCommandMutation, executeWorkbenchFileChangeMutation } from './portable-mutation-handlers'
 import { PortableOperationError } from './portable-operation-errors'
 import { preflightWorkbenchPacket, type WorkbenchPacket } from './workbench-packets'
@@ -34,6 +34,9 @@ import { recoverWorkbenchExecutionJournals } from './workbench-execution-journal
 import { getWorkbenchPacketResult } from './workbench-packet-results'
 import { drainQueuedWorkbenchPackets, scheduleWorkbenchPacket } from './workbench-packet-coordinator'
 import { claimNextWorkbenchPacket, compactWorkbenchPacketLeaseRecord, controlWorkbenchPacketsForRun, getWorkbenchPacketRecord, listWorkbenchPacketRecords, recoverInterruptedWorkbenchPacket, recoverStaleWorkbenchPacketLeases, releaseWorkbenchPacketLease, renewWorkbenchPacketLease, reserveWorkbenchPacket } from './workbench-packet-store'
+import { dispatchWorkbenchGoal, getWorkbenchGoalTerminalResult, type WorkbenchGoalDispatchInput } from './workbench-goal-dispatch'
+import { compileNativeGoal } from './native-goal-compiler'
+import { projectCodexProviderStatus } from './codex-provider-status'
 import { getBuildSha, getBuildTimestamp } from '@workbench/shared'
 import { initializeCapabilityRuntime, scheduleCapabilityRuntimeMaintenance } from '../../../mcp/dist/capability-runtime-bootstrap.js'
 import { initializeKnowledgeContextRuntime } from '../../../mcp/dist/knowledge-context-runtime.js'
@@ -42,6 +45,9 @@ import { resolveActiveProviders } from '../../../mcp/dist/provider-activation.js
 import { loadConfiguredProviderRuntime } from '../../../mcp/dist/workspace-configuration.js'
 import { getCodebaseMemoryProviderDiagnostics } from './cbm-graph-context'
 import { WorkbenchMaintenanceScheduler } from './workbench-maintenance-scheduler'
+import { pruneWorkbenchEvidence } from './workbench-evidence-store'
+import { pruneWorkbenchReadResultRecovery } from './workbench-read-result-recovery'
+import { pruneWorkbenchSessions } from './workbench-session-store'
 
 let cliVersion = process.env.WORKBENCH_PACKAGE_VERSION || 'unknown'
 try {
@@ -112,6 +118,12 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
   let maintenanceYield: () => Promise<void> = async () => {}
   const indexer = new Indexer(undefined, { yieldIfNeeded: async () => maintenanceYield() })
   const config = loadConfig()
+  const sessionPrune = pruneWorkbenchSessions()
+  const evidencePrune = pruneWorkbenchEvidence()
+  const readRecoveryPrune = pruneWorkbenchReadResultRecovery()
+  if (sessionPrune.ok && sessionPrune.deleted > 0) console.log(`[Workbench lifecycle] Pruned ${sessionPrune.deleted} stale session record(s).`)
+  if (evidencePrune.ok && evidencePrune.deleted > 0) console.log(`[Workbench lifecycle] Pruned ${evidencePrune.deleted} expendable evidence record(s).`)
+  if (readRecoveryPrune.ok && readRecoveryPrune.deleted > 0) console.log(`[Workbench lifecycle] Pruned ${readRecoveryPrune.deleted} stale read-recovery record(s).`)
   const capabilityRuntimeStatus = initializeCapabilityRuntime({ adapters: [], rootDir: process.env.WORKBENCH_PROVIDER_STATE_DIR })
   if (!capabilityRuntimeStatus.initialized) console.error(`[Capability runtime] Startup recovery failed safely: ${capabilityRuntimeStatus.maintenanceError || 'unknown error'}`)
   const capabilityRuntimeMaintenance = scheduleCapabilityRuntimeMaintenance({ adapters: [], rootDir: process.env.WORKBENCH_PROVIDER_STATE_DIR }, capabilityRuntimeStatus)
@@ -920,7 +932,15 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
     if (!sourceId) return reply.code(400).send({ error: 'sourceId is required' })
     const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
     if (!source) return reply.code(404).send({ error: `Source not found or disabled: ${sourceId}` })
-    const run = getActiveWorkbenchRun(sourceId)
+    let run = getActiveWorkbenchRun(sourceId)
+    let terminalResult: Record<string, unknown> | undefined
+    const latestTerminal = findLatestTerminalWorkbenchRun(sourceId, source.path)
+    if (latestTerminal && (!run
+      || latestTerminal.run.id === run.id
+      || Date.parse(latestTerminal.run.updatedAt || latestTerminal.run.createdAt || '') > Date.parse(String(run.updatedAt || '')))) {
+      run = latestTerminal.run
+      terminalResult = latestTerminal.terminalResult
+    }
     const packets = run && typeof run.id === 'string'
       ? listWorkbenchPacketRecords({ runId: run.id, limit: 10 }).map(record => ({
           packetId: record.packet.packetId,
@@ -944,20 +964,82 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
       status: 'ok',
       sourceId,
       activeRun: run ? { ...run, packets } : null,
+      ...(terminalResult ? { terminalResult } : {}),
       ...(activity ? { activity } : {})
     })
   })
 
-  fastify.post<{ Body: { sourceId: string; goal: string; documentationPath?: string; maxIterations?: number; autoCommit?: boolean } }>('/api/workbench-runs/create', async (request, reply) => {
+  fastify.post<{ Body: { sourceId: string; goal: string; documentationPath?: string; maxIterations?: number; autoCommit?: boolean; nativeDirectGoal?: boolean; nativeGoalPaths?: string[]; confirmedByUser?: boolean; executionMode?: 'auto' | 'direct' | 'codex'; goalDispatch?: WorkbenchGoalDispatchInput } }>('/api/workbench-runs/create', async (request, reply) => {
     try {
-      const { sourceId, goal, documentationPath, maxIterations, autoCommit } = request.body || {}
+      const { sourceId, goal, documentationPath, maxIterations, autoCommit, nativeDirectGoal, nativeGoalPaths } = request.body || {}
+      const executionMode = request.body?.executionMode === 'codex' || request.body?.executionMode === 'direct' || request.body?.executionMode === 'auto'
+        ? request.body.executionMode
+        : nativeDirectGoal === true ? 'direct' : 'auto'
       const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
       if (!source) return reply.code(404).send({ error: `Source not found or disabled: ${sourceId}` })
+      if (executionMode !== 'codex' || nativeDirectGoal === true) {
+        const compilation = await compileNativeGoal({
+          goal,
+          sourceId,
+          sourceRoot: source.path,
+          searcher,
+          paths: Array.isArray(nativeGoalPaths) ? nativeGoalPaths : undefined,
+          confirmedByUser: request.body?.confirmedByUser === true,
+          autoCommit: autoCommit === true
+        })
+        if (compilation.route === 'blocked') {
+          return reply.code(409).header('Cache-Control', 'no-store').send({
+            status: 'blocked',
+            verified: false,
+            executionMode, providerStatus: projectCodexProviderStatus({ directCapability: true }), nativeGoal: { intent: compilation.intent, route: compilation.route, reviewMessage: compilation.reviewMessage, compilerMs: compilation.compilerMs },
+            error: { code: 'NATIVE_GOAL_REVIEW_REQUIRED', message: compilation.reviewMessage }
+          })
+        }
+        if (compilation.route === 'goal_dispatch' && compilation.dispatch) {
+          const result = dispatchWorkbenchGoal({
+            sourceId,
+            sourceRoot: source.path,
+            goal,
+            requestId: requestIdFrom(request, request.body),
+            documentationPath,
+            maxIterations,
+            dispatch: compilation.dispatch
+          })
+          return reply.code(result.status === 'blocked' ? 409 : 202).header('Cache-Control', 'no-store').send({
+            ...result,
+            executionMode, providerStatus: projectCodexProviderStatus({ directCapability: true }), nativeGoal: { intent: compilation.intent, route: compilation.route, reviewMessage: compilation.reviewMessage, compilerMs: compilation.compilerMs }
+          })
+        }
+        const roadmap = createWorkbenchRun({ sourceId, goal, documentationPath, maxIterations, autoCommit, autoPush: false, autonomyLevel: 'hands_off_safe' })
+        return reply.header('Cache-Control', 'no-store').send({
+          status: 'ok',
+          created: roadmap.created,
+          verified: true,
+          executionMode,
+          providerStatus: projectCodexProviderStatus({ directCapability: true }),
+          run: getActiveWorkbenchRun(sourceId),
+          nativeGoal: { intent: compilation.intent, route: compilation.route, reviewMessage: compilation.reviewMessage, compilerMs: compilation.compilerMs }
+        })
+      }
+      if (request.body?.goalDispatch) {
+        const result = dispatchWorkbenchGoal({
+          sourceId,
+          sourceRoot: source.path,
+          goal,
+          requestId: requestIdFrom(request, request.body),
+          documentationPath,
+          maxIterations,
+          dispatch: request.body.goalDispatch
+        })
+        return reply.code(result.status === 'blocked' ? 409 : 202).header('Cache-Control', 'no-store').send(result)
+      }
       const result = createWorkbenchRun({ sourceId, goal, documentationPath, maxIterations, autoCommit, autoPush: false, autonomyLevel: 'hands_off_safe' })
       return reply.header('Cache-Control', 'no-store').send({
         status: 'ok',
         created: result.created,
         verified: true,
+        executionMode,
+        providerStatus: projectCodexProviderStatus({ directCapability: true }),
         run: getActiveWorkbenchRun(sourceId)
       })
     } catch (err) {
@@ -970,6 +1052,13 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
       const { sourceId, runId } = request.body || {}
       const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
       if (!source) return reply.code(404).send({ error: `Source not found or disabled: ${sourceId}` })
+      if (typeof runId !== 'string' || !runId.trim()) return reply.code(400).send({ error: 'runId is required; Workbench never infers an active run.' })
+      if (runId) {
+        const terminalResult = getWorkbenchGoalTerminalResult({ runId, sourceId, sourceRoot: source.path })
+        if (terminalResult) {
+          return reply.header('Cache-Control', 'no-store').send({ status: 'ok', resumed: false, terminal: true, verified: terminalResult.status === 'completed', run: getAgentJob(runId), terminalResult })
+        }
+      }
       resumeWorkbenchRun({ sourceId, runId })
       return reply.header('Cache-Control', 'no-store').send({ status: 'ok', resumed: true, verified: true, run: getActiveWorkbenchRun(sourceId) })
     } catch (err) {

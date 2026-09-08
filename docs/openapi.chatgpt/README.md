@@ -7,6 +7,12 @@ Workbench is designed for two kinds of interaction:
 - **Quick mode** for focused questions and small edits.
 - **Goal mode** for substantial local development work built from persistent state and multiple bounded action cycles.
 
+For the lowest-latency local repository work, use the native Workbench New Goal
+surface. It reuses the same durable run and packet architecture without the
+Custom GPT Action-ingress boundary. Custom GPT remains the supported
+conversation-first path for remote planning, explanation, oversight, and
+handoff; the five-Action public contract is unchanged.
+
 The GPT-facing API remains short and fail-fast. Larger goals must be implemented through durable run state, bounded work packets, asynchronous local execution where supported, compact status retrieval, and resume checkpoints—not one indefinitely open request.
 
 ## Canonical schema sources
@@ -37,6 +43,15 @@ Current route deadlines:
 - apply file change: 8 seconds
 - commit changes: 10 seconds
 - run command: 12 seconds
+
+Routing and source-lock contract:
+
+- `getWorkbenchStatus` is for health, explicit source discovery, and resume/current-state checks; it is not a generic content preflight.
+- `readWorkbenchContext` owns repository files, symbols, and bounded task context. When the source is known, call it directly without a status round trip.
+- `Workbench Private` resolves exactly to `prochattools-workbench`; never substitute Brain or another configured source.
+- `runWorkbenchCommand` is reserved for explicit command, validation, or evidence operations. Do not use `git_status_short` as a generic repository/content preflight.
+
+Public responses use the compact projection required by the GPT byte budget. Native macOS callers use the private full-source projection when path and index metadata are required; the projections are intentionally separate.
 
 If an operation cannot finish safely, Workbench should return structured timeout, unavailable, confirmation, or narrower-scope guidance before the external action timeout.
 
@@ -83,9 +98,9 @@ Goal-mode safety requirements remain:
 - compact status retrieval
 - restart recovery
 - confirmation, cancellation, and repair stop policies
-- no arbitrary shell execution, broad staging, hidden model runtime, or default push
+- no unbounded host-terminal access, broad staging, hidden model runtime, or default push. `run_repo_shell` is owner-scoped to the selected source root, bounded, redacted, and denied only for the documented high-risk/system/secret boundary.
 
-Quick mode remains available for focused questions and small edits. Goal mode should use durable run state, bounded packets, compact result review, exact resume state, and persisted continuation decisions without relying on arbitrary per-turn action counts.
+Quick mode remains available for focused questions and small edits. Goal mode should use durable run state, bounded packets, compact result review, exact resume state, and persisted continuation decisions without relying on arbitrary per-turn action counts. A goal scope may contain exact files or bounded repository-relative directory prefixes; every read and mutation must remain inside that declared scope.
 
 ## Context and navigation modes
 

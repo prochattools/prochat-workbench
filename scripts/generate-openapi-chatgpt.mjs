@@ -2,6 +2,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { applyGoalDispatchSchema } from './openapi-goal-dispatch.mjs'
 
 // GPT Actions run outside the owner Mac. The imported schema must advertise
 // the public tunnel, while LOCAL_DASHBOARD_BASE_URL remains an explicit
@@ -12,6 +13,14 @@ const CANONICAL_SOURCE_FILE = path.resolve(process.cwd(), 'apps/web/src/lib/open
 const FROM_SOURCE = process.argv.includes('--from-source')
 
 function assertGeneratedSchema(schema) {
+  const fileChangeSchema = schema?.paths?.['/api/actions/apply-file-change']?.post?.requestBody?.content?.['application/json']?.schema
+  const fileChangeTypes = fileChangeSchema?.properties?.changeType?.enum || []
+  for (const changeType of ['create_run', 'resume_run', 'close_run']) {
+    if (!fileChangeTypes.includes(changeType)) throw new Error(`Generated schema is stale: ${changeType} lifecycle operation is missing`)
+  }
+  for (const field of ['goal', 'runId', 'summary']) {
+    if (!fileChangeSchema?.properties?.[field]) throw new Error(`Generated schema is stale: ${field} lifecycle field is missing`)
+  }
   const commitSchema = schema?.paths?.['/api/actions/commit-changes']?.post?.requestBody?.content?.['application/json']?.schema
   if (!Array.isArray(commitSchema?.required) || !commitSchema.required.includes('sessionId')) {
     throw new Error('Generated schema is stale: commitWorkbenchChanges must require an active sessionId')
@@ -30,8 +39,10 @@ function assertGeneratedSchema(schema) {
   if (!commandKinds.includes('n8n_workflow_export')) throw new Error('Generated schema is stale: n8n_workflow_export is missing')
   if (!commandKinds.includes('n8n_workflow_migration')) throw new Error('Generated schema is stale: n8n_workflow_migration is missing')
   if (!commandKinds.includes('read_evidence')) throw new Error('Generated schema is stale: read_evidence is missing')
+  if (!commandKinds.includes('run_repo_shell')) throw new Error('Generated schema is stale: run_repo_shell is missing')
   if (!commandProperties.workflowId) throw new Error('Generated schema is stale: workflowId is missing')
   if (!commandProperties.outputPath) throw new Error('Generated schema is stale: outputPath is missing')
+  if (!commandProperties.command) throw new Error('Generated schema is stale: repository shell command field is missing')
   if (commandProperties.networkAccess?.type !== 'boolean') throw new Error('Generated schema is stale: networkAccess must be boolean')
   const validationOperations = commandProperties.validationJobOperation?.enum || []
   if (!validationOperations.includes('evidence')) throw new Error('Generated schema is stale: evidence retrieval operation is missing')
@@ -69,6 +80,7 @@ async function main() {
       if (!contentType.includes('application/json')) throw new Error(`Expected JSON schema, got ${contentType}`)
       return response.json()
     })()
+  applyGoalDispatchSchema(schema)
   assertGeneratedSchema(schema)
   const serialized = `${JSON.stringify(schema)}\n`
   const temporaryFile = `${OUTPUT_FILE}.tmp-${process.pid}`

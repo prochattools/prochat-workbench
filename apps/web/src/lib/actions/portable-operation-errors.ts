@@ -41,7 +41,9 @@ export function classifyPortableOperationError(error: unknown): PortableOperatio
   if (error instanceof PortableOperationError) return error
   const message = error instanceof Error ? error.message : String(error)
   const normalized = message.toLowerCase()
-  if (normalized.includes('source mismatch')) return new PortableOperationError('source_mismatch', message)
+  if (normalized.includes('source mismatch') || (normalized.includes('source') && (normalized.includes('mismatch') || normalized.includes('does not match')))) {
+    return new PortableOperationError('source_mismatch', message)
+  }
   if (normalized.includes('session')) return new PortableOperationError('session_invalid', message)
   if (normalized.includes('confirmation')) return new PortableOperationError('invalid_confirmation', message)
   if (normalized.includes('stale') && normalized.includes('head')) return new PortableOperationError('stale_head', message)

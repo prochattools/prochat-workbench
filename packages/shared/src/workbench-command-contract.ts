@@ -32,6 +32,7 @@ export const RUN_WORKBENCH_DIRECT_COMMAND_KINDS = [
   'local_cli_github_auth_status',
   'local_cli_github_repo_view',
   'run_exact_command',
+  'run_repo_shell',
   'n8n_workflow_export',
   'n8n_workflow_migration'
 ] as const
@@ -199,6 +200,11 @@ export const directRunWorkbenchCommandRequestSchema = z.discriminatedUnion('comm
     policy: exactCommandPolicySchema.optional(),
     protectedPaths: protectedPathListSchema.optional(),
     requiredBranch: branchSchema.optional(),
+    networkAccess: z.boolean().optional()
+  }),
+  commandSchema('run_repo_shell', {
+    packageDir: packageDirSchema.optional(),
+    command: z.string().trim().min(1).max(4000),
     networkAccess: z.boolean().optional()
   }),
   commandSchema('n8n_workflow_export', {

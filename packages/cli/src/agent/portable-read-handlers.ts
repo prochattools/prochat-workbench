@@ -1,13 +1,14 @@
 import { promises as fsp } from 'node:fs'
 import path from 'node:path'
-import { getActiveWorkbenchRun, listActiveWorkbenchRuns } from './agent-jobs'
+import { getActiveWorkbenchRun, listActiveWorkbenchRuns, listAgentJobs } from './agent-jobs'
+import { getWorkbenchGoalTerminalResult } from './workbench-goal-dispatch'
 import { appendAgentEvent, listWorkbenchActivity } from './agent-events'
 import { ensureWorkbenchActionRun, type WorkbenchActionRunBinding, updateAgentJob } from './agent-jobs'
 import { listWorkbenchPacketRecords } from './workbench-packet-store'
 import { getActiveSourceContext, getSourceIndexState, getSourcesSafe, isSourcePathAvailable } from './config'
 import { handleFocusedRead } from './focused-read'
 import { handleGraphContextRouted } from './graph-context-router'
-import { Indexer, getIndexedDocumentCountFromDisk } from './indexer'
+import { DEFAULT_IGNORE_PATTERNS, Indexer, MAX_INDEXABLE_FILE_BYTES, boundedSourceScan, getIndexedDocumentCountFromDisk } from './indexer'
 import { prepareTaskContext, shouldPrepareStructuralContext, type KnowledgeContextPreparation, type StructuralContextPreparation } from './prepare-task-context'
 import { VaultSearcher } from './search'
 import { getResolvedActiveSources, redactSecrets, shouldIncludeEntry, truncateContent } from './safe-access'
@@ -23,6 +24,7 @@ import { getWorkbenchReadResultRecovery, markWorkbenchReadResultReconciled, pers
 import { projectActiveRunContinuity, resolveResumeNavigation, type ActiveRunContinuity } from '@workbench/shared'
 import { getFocusedWorkspace } from './focused-workspace'
 import { getSourceReconciliationReport } from './source-reconciliation'
+import type { IndexedDoc } from '@workbench/shared'
 
 const MAX_PATHS = 5
 const MAX_FILE_BYTES = 4_000
@@ -81,6 +83,22 @@ export function maybeProjectPortableActiveRunActivity(
     : undefined
 }
 
+/** Prefer a newer durable terminal goal over an older paused/blocked projection. */
+export function findLatestTerminalWorkbenchRun(sourceId: string, sourceRoot: string): {
+  run: Record<string, unknown> & { id: string; sourceId: string; status: string; updatedAt?: string; createdAt?: string }
+  terminalResult: Record<string, unknown>
+} | undefined {
+  const candidates = listAgentJobs()
+    .filter(item => item.sourceId === sourceId && ['completed', 'failed', 'cancelled', 'blocked'].includes(item.status))
+    .sort((left, right) => Date.parse(right.updatedAt || right.createdAt || '') - Date.parse(left.updatedAt || left.createdAt || ''))
+    .slice(0, 8)
+  for (const candidate of candidates) {
+    const terminalResult = getWorkbenchGoalTerminalResult({ runId: candidate.id, sourceId, sourceRoot })
+    if (terminalResult) return { run: candidate as Record<string, unknown> & { id: string; sourceId: string; status: string; updatedAt?: string; createdAt?: string }, terminalResult }
+  }
+  return undefined
+}
+
 export function projectPortableActivityDelta(
   sourceId: string,
   runId: string,
@@ -136,6 +154,66 @@ function actionRunGoal(payload: Payload): string {
   const subject = asString(payload.query) || asString(payload.path) || (Array.isArray(payload.paths) ? payload.paths.filter((value): value is string => typeof value === 'string').slice(0, 2).join(', ') : undefined)
   const safeSubject = subject ? redactSecrets(subject).slice(0, 180) : 'current task'
   return `External Workbench task: ${mode}${safeSubject ? ` · ${safeSubject}` : ''}`
+}
+
+export function compactStatusRun(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const run = value as Record<string, unknown>
+  return {
+    ...(typeof run.id === 'string' ? { id: run.id } : {}),
+    ...(typeof run.runId === 'string' ? { runId: run.runId } : {}),
+    ...(typeof run.sessionId === 'string' ? { sessionId: run.sessionId } : {}),
+    ...(typeof run.sourceId === 'string' ? { sourceId: run.sourceId } : {}),
+    ...(typeof run.workspace === 'string' ? { workspace: run.workspace.slice(0, 180) } : {}),
+    ...(typeof run.status === 'string' ? { status: run.status } : {}),
+    ...(typeof run.currentPosition === 'string' ? { currentPosition: run.currentPosition.slice(0, 240) } : {}),
+    ...(typeof run.summary === 'string' ? { summary: run.summary.slice(0, 320) } : {}),
+    ...(Array.isArray(run.nextActions) ? { nextActions: run.nextActions.filter(item => typeof item === 'string').slice(0, 3) } : {}),
+    ...(typeof run.nextAction === 'string' ? { nextAction: run.nextAction.slice(0, 240) } : {}),
+    ...(typeof run.blocker === 'string' ? { blocker: run.blocker.slice(0, 240) } : {}),
+    ...(run.phase && typeof run.phase === 'object' && !Array.isArray(run.phase) ? { phase: run.phase } : {}),
+    ...(run.task && typeof run.task === 'object' && !Array.isArray(run.task) ? { task: run.task } : {}),
+    ...(typeof run.lastAcceptedTransition === 'string' ? { lastAcceptedTransition: run.lastAcceptedTransition.slice(0, 80) } : {}),
+    ...(run.requiresConfirmation === true ? { requiresConfirmation: true } : {}),
+    ...(typeof run.confirmationReason === 'string' ? { confirmationReason: run.confirmationReason.slice(0, 240) } : {}),
+    ...(typeof run.blockedReason === 'string' ? { blockedReason: run.blockedReason.slice(0, 240) } : {}),
+    ...(typeof run.recommendedReasoning === 'string' ? { recommendedReasoning: run.recommendedReasoning } : {}),
+    ...(typeof run.recommendedExecutor === 'string' ? { recommendedExecutor: run.recommendedExecutor } : {}),
+    ...(typeof run.updatedAt === 'string' ? { updatedAt: run.updatedAt } : {})
+  }
+}
+
+export function compactStatusResponse(value: Record<string, unknown>, options: { preserveSources?: boolean } = {}): Record<string, unknown> {
+  const compact = { ...value }
+  delete compact.maintenance
+  if (!options.preserveSources && Array.isArray(compact.sources)) {
+    const sourceCount = compact.sources.length
+    const sources = compact.sources
+      .filter((source): source is Record<string, unknown> => Boolean(source) && typeof source === 'object' && !Array.isArray(source))
+      .slice(0, 20)
+      .map(source => ({
+        id: typeof source.id === 'string' ? source.id.slice(0, 200) : '',
+        label: typeof source.label === 'string' ? source.label.slice(0, 200) : '',
+        ...(typeof source.enabled === 'boolean' ? { enabled: source.enabled } : {}),
+        ...(typeof source.active === 'boolean' ? { active: source.active } : {})
+      }))
+    compact.sources = sources
+    if (sources.length < sourceCount) compact.sourcesTruncated = true
+  }
+  if (compact.resume && typeof compact.resume === 'object' && !Array.isArray(compact.resume)) {
+    const resume = compact.resume as Record<string, unknown>
+    compact.resume = {
+      ...(typeof resume.status === 'string' ? { status: resume.status } : {}),
+      ...(typeof resume.sourceId === 'string' ? { sourceId: resume.sourceId } : {}),
+      ...(typeof resume.nextAction === 'string' ? { nextAction: resume.nextAction.slice(0, 240) } : {}),
+      ...(typeof resume.blocker === 'string' ? { blocker: resume.blocker.slice(0, 240) } : {}),
+      ...(compactStatusRun(resume.activeRun) ? { activeRun: compactStatusRun(resume.activeRun) } : {})
+    }
+  }
+  if (Array.isArray(compact.activeRuns)) {
+    compact.activeRuns = compact.activeRuns.map(compactStatusRun).filter((run): run is Record<string, unknown> => Boolean(run)).slice(0, 5)
+  }
+  return compact
 }
 
 function projectActionRunStart(binding: WorkbenchActionRunBinding, context?: PortableExecutionContext): void {
@@ -335,6 +413,53 @@ function makeSearcher(sourceIds?: string[]): VaultSearcher {
   return new VaultSearcher(new Indexer(sourceIds).getDocs())
 }
 
+const FALLBACK_MAX_FILES = 800
+const FALLBACK_MAX_BYTES = 20 * 1024 * 1024
+
+async function makeFilesystemFallbackSearcher(sourceIds: string[]): Promise<VaultSearcher> {
+  const docs: IndexedDoc[] = []
+  let totalBytes = 0
+  const sources = getResolvedActiveSources(sourceIds)
+  for (const source of sources) {
+    const scan = await boundedSourceScan(source.path, ['**/*'], DEFAULT_IGNORE_PATTERNS)
+    for (const relativePath of scan.files.slice(0, FALLBACK_MAX_FILES)) {
+      if (docs.length >= FALLBACK_MAX_FILES || totalBytes >= FALLBACK_MAX_BYTES) break
+      try {
+        const fullPath = path.join(source.path, relativePath)
+        const stat = await fsp.stat(fullPath)
+        if (!stat.isFile() || stat.size > MAX_INDEXABLE_FILE_BYTES || totalBytes + stat.size > FALLBACK_MAX_BYTES) continue
+        const buffer = await fsp.readFile(fullPath)
+        if (buffer.subarray(0, Math.min(buffer.length, 4096)).includes(0)) continue
+        const content = buffer.toString('utf8')
+        docs.push({
+          sourceId: source.id,
+          id: `${source.id}:${relativePath}`,
+          path: relativePath,
+          title: path.basename(relativePath, path.extname(relativePath)),
+          extension: path.extname(relativePath),
+          modifiedAt: stat.mtime.toISOString(),
+          size: stat.size,
+          tags: [],
+          contentPreview: content.slice(0, 200),
+          content
+        })
+        totalBytes += stat.size
+      } catch {
+        // A disappearing or unreadable file is omitted from the bounded fallback.
+      }
+    }
+  }
+  return new VaultSearcher(docs)
+}
+
+async function makeSearcherWithFilesystemFallback(sourceIds: string[], dependencies: PortableReadHandlerDependencies): Promise<{ searcher: VaultSearcher; fallbackUsed: boolean }> {
+  const indexed = dependencies.searcher ? dependencies.searcher(sourceIds) : makeSearcher(sourceIds)
+  const unready = sourceIds.filter(sourceId => !isSourceSearchReady(getSourceIndexState(sourceId)))
+  if (unready.length === 0) return { searcher: indexed, fallbackUsed: false }
+  const fallback = await makeFilesystemFallbackSearcher(unready)
+  return { searcher: new VaultSearcher([...indexed.getDocs(), ...fallback.getDocs()]), fallbackUsed: true }
+}
+
 async function readContext(payload: Payload, executionContext?: PortableExecutionContext, dependencies: PortableReadHandlerDependencies = {}): Promise<Record<string, unknown>> {
   const mode = asString(payload.mode)
   if (!mode) fail('invalid_request', 'mode is required')
@@ -345,7 +470,8 @@ async function readContext(payload: Payload, executionContext?: PortableExecutio
     const selected = sourceIds(payload, executionContext)
     if (!query || !selected.length) fail('invalid_request', 'query and sourceId or sourceIds are required')
     requireSearchReady(selected, dependencies)
-    const search = (dependencies.searcher ? dependencies.searcher(selected) : makeSearcher(selected)).searchBounded(query, bounded(payload.limit, 5, 1, MAX_PATHS), selected, { startedAt: Date.now(), deadlineMs: 1200, maxDocsPerSource: 1500, maxContentDocsPerSource: 350 })
+    const searcherResult = await makeSearcherWithFilesystemFallback(selected, dependencies)
+    const search = searcherResult.searcher.searchBounded(query, bounded(payload.limit, 5, 1, MAX_PATHS), selected, { startedAt: Date.now(), deadlineMs: 1200, maxDocsPerSource: 1500, maxContentDocsPerSource: 350 })
     const matches = search.results.slice(0, MAX_PATHS)
     if (!matches.length) return { mode, results: [], noMatches: true, query, ...(search.sourceWarnings.length ? { sourceWarnings: search.sourceWarnings } : {}) }
     const matchedSourceIds = Array.from(new Set(matches.map(match => typeof match.sourceId === 'string' ? match.sourceId : '').filter(Boolean)))
@@ -377,7 +503,15 @@ async function readContext(payload: Payload, executionContext?: PortableExecutio
     if (!sourceId) fail('invalid_request', 'sourceId is required')
     const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
     if (!source) fail('source_mismatch', `Source not found or disabled: ${sourceId}`)
-    const run = getActiveWorkbenchRun(sourceId)
+    let run = getActiveWorkbenchRun(sourceId)
+    let terminalResult: Record<string, unknown> | undefined
+    const latestTerminal = findLatestTerminalWorkbenchRun(sourceId, source.path)
+    if (latestTerminal && (!run
+      || latestTerminal.run.id === run.id
+      || Date.parse(latestTerminal.run.updatedAt || latestTerminal.run.createdAt || '') > Date.parse(String(run.updatedAt || '')))) {
+      run = latestTerminal.run
+      terminalResult = latestTerminal.terminalResult
+    }
     const requestedRunId = asString(payload.runId)
     if (payload.activityDelta === true && requestedRunId) {
       if (!run || run.id !== requestedRunId) {
@@ -412,13 +546,14 @@ async function readContext(payload: Payload, executionContext?: PortableExecutio
     const activity = run && typeof run.id === 'string'
       ? maybeProjectPortableActiveRunActivity(sourceId, run.id, payload.includeActivity)
       : undefined
-    return formatPortableActiveRunResponse(sourceId, run, packets, activity)
+    const response = formatPortableActiveRunResponse(sourceId, run, packets, activity)
+    return terminalResult ? { ...response, terminalResult } : response
   }
   if (mode === 'search' || mode === 'search_and_read' || mode === 'prepare_task_context') {
     const query = asString(payload.query)
     const selected = sourceIds(payload, executionContext)
     if (!query || !selected.length) fail('invalid_request', 'query and sourceId or sourceIds are required')
-    requireSearchReady(selected, dependencies)
+    if (mode !== 'prepare_task_context') requireSearchReady(selected, dependencies)
     if (mode === 'prepare_task_context' && selected.length !== 1) {
       fail('dependency_unavailable', 'Context Broker requires one authorized source for task context preparation.')
     }
@@ -426,7 +561,8 @@ async function readContext(payload: Payload, executionContext?: PortableExecutio
       ? authorizeContextRead(selected[0], typeof payload.contextIntelligenceSessionId === 'string' ? payload.contextIntelligenceSessionId : undefined, executionContext?.sourceId ? 'execution-context' : asString(payload.sourceId) ? 'explicit-source-id' : 'active-source-context')
       : undefined
     if (preparation && !preparation.ok) fail('dependency_unavailable', 'message' in preparation ? preparation.message : 'Context preparation failed.')
-    const searcher = dependencies.searcher ? dependencies.searcher(selected) : makeSearcher(selected)
+    const searcherResult = await makeSearcherWithFilesystemFallback(selected, dependencies)
+    const searcher = searcherResult.searcher
     if (mode === 'prepare_task_context') {
       const workflowStartedAt = Date.now()
       if (payload.contextWorkflow === true) {
@@ -462,6 +598,10 @@ async function readContext(payload: Payload, executionContext?: PortableExecutio
           knowledgeContext,
           structuralContext: shouldPrepareStructuralContext(query, paths) ? structuralContext : undefined
         })
+        if (searcherResult.fallbackUsed) {
+          prepared.searchNotes = [...prepared.searchNotes, 'Semantic index was unavailable; bounded deterministic filesystem fallback was used.']
+          prepared.uncertainty = [...prepared.uncertainty, 'Search ranking came from a bounded filesystem fallback because the semantic index was not ready.']
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Context package preparation failed.'
         fail('dependency_unavailable', message)
@@ -498,7 +638,12 @@ export function createPortableReadHandlers(dependencies: PortableReadHandlerDepe
     },
     getWorkbenchStatus: payload => {
       const include = asString((payload as Payload).include)
-      const fullSources = include === 'sources' || include === 'all'
+      // The native macOS client asks for the private `native` projection. It
+      // needs the complete source records to hydrate KnowledgeSource values;
+      // the public `sources` projection remains compact for GPT/UI payload
+      // budgets and must not leak repository paths or index metadata.
+      const nativeSources = include === 'native'
+      const fullSources = nativeSources || include === 'sources' || include === 'all'
       const sources = getSourcesSafe(fullSources ? {} : { refreshGitMetadata: false, includeIndexState: false })
       const active = getActiveSourceContext(fullSources ? {} : { refreshGitMetadata: false, includeIndexState: false })
       const focusedWorkspace = getFocusedWorkspace()
@@ -512,7 +657,7 @@ export function createPortableReadHandlers(dependencies: PortableReadHandlerDepe
         ...(focusedWorkspace.isGitWorktree !== undefined ? { isGitWorktree: focusedWorkspace.isGitWorktree } : {}),
         updatedAt: focusedWorkspace.updatedAt
       } : undefined
-      return {
+      return compactStatusResponse({
         connected: true,
         sourceCount: sources.length,
         sourcesAvailable: sources.length > 0,
@@ -520,7 +665,7 @@ export function createPortableReadHandlers(dependencies: PortableReadHandlerDepe
         ...(dependencies.indexingActive ? { indexingActive: dependencies.indexingActive() } : {}),
         ...(dependencies.indexingSourceIds ? { indexingSourceIds: dependencies.indexingSourceIds() } : {}),
         ...(dependencies.maintenanceSnapshot ? { maintenance: dependencies.maintenanceSnapshot() } : {}),
-        ...(include === 'sources' || include === 'all' ? { sources } : {}),
+        ...(fullSources ? { sources } : {}),
         ...(include === 'active' || include === 'all' ? {
           activeSourceIds: active.activeSourceIds,
           contextMode: active.mode,
@@ -528,7 +673,7 @@ export function createPortableReadHandlers(dependencies: PortableReadHandlerDepe
           ...(focusedWorkspaceProjection ? { focusedWorkspace: focusedWorkspaceProjection } : {}),
           activeRuns: resume.status === 'ACTIVE_RUN' || resume.status === 'BLOCKED_RUN' ? [resume.activeRun] : []
         } : {})
-      }
+      }, { preserveSources: nativeSources })
     },
     readWorkbenchContext: (payload, context) => contextReadWithDependencies(payload as Payload, context, dependencies)
   }
@@ -624,9 +769,9 @@ async function contextReadWithDependencies(payload: Payload, context: PortableEx
     const recovery = recoveryIdentity
       ? persistWorkbenchReadResult({ identity: recoveryIdentity, owner, evidenceId: resultRef, content })
       : undefined
-    if (recovery && !recovery.ok) {
-      throw new PortableOperationError('dependency_unavailable', 'Workbench completed the read but could not persist its bounded recovery result.', { details: recovery })
-    }
+    const recoveryWarning = recovery && recovery.ok === false
+      ? { code: recovery.code, message: recovery.message }
+      : undefined
     let evidence = attachWorkbenchEvidence({ entries: [{ kind: 'capability_result', owner, retentionClass: 'active_run', content }] }, dependencies.evidenceStore)
     // A lock collision is transient. Retry the persistence operation once, without rerunning the repository read.
     if (!evidence.evidenceRefs?.length && evidence.evidenceUnavailable?.code === 'EVIDENCE_STORE_BUSY') {
@@ -637,7 +782,7 @@ async function contextReadWithDependencies(payload: Payload, context: PortableEx
       return {
         ...durableResult,
         resultRef,
-        resultPersistence: { status: 'recovery_pending', authoritative: false, ...(recovery && recovery.ok ? { recoveryId: recovery.record.recoveryId } : {}) },
+        resultPersistence: { status: 'recovery_pending', authoritative: false, ...(recovery && recovery.ok ? { recoveryId: recovery.record.recoveryId } : {}), ...(recoveryWarning ? { warning: recoveryWarning } : {}) },
         evidenceUnavailable: evidence.evidenceUnavailable
       }
     }
@@ -646,7 +791,8 @@ async function contextReadWithDependencies(payload: Payload, context: PortableEx
     if (binding) projectResponseCompleted(binding, context)
     return {
       ...durableResult,
-      resultRef: authoritativeRef
+      resultRef: authoritativeRef,
+      ...(recoveryWarning ? { resultPersistence: { status: 'authoritative', authoritative: true, warning: recoveryWarning } } : {})
     }
   } catch (error) {
     if (binding) {

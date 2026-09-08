@@ -85,6 +85,8 @@ type WorkbenchEvidenceStore = {
 const DEFAULT_STORE_PATH = path.join(getConfigDir(), 'workbench-evidence.json')
 const MAX_LIST_RECORDS = 100
 const MAX_CAPACITY_RECLAIM_RECORDS_PER_APPEND = 100
+const ABANDONED_READ_RESULT_GRACE_MS = 2 * 60 * 60_000
+const ABANDONED_PAUSED_READ_RESULT_GRACE_MS = 7 * 24 * 60 * 60_000
 
 function storePath(options: WorkbenchEvidenceStoreOptions = {}): string {
   return options.storePath || DEFAULT_STORE_PATH
@@ -102,16 +104,41 @@ function retentionExpiryMs(record: WorkbenchEvidenceRecord): number {
   return WORKBENCH_EVIDENCE_RETENTION_POLICY_MS[record.retentionClass]
 }
 
-function isProvenProtectedRun(record: WorkbenchEvidenceRecord, options: WorkbenchEvidenceStoreOptions): boolean {
+type SessionLookup = ReturnType<typeof getWorkbenchSession>
+
+function lookupSession(sessionId: string, options: WorkbenchEvidenceStoreOptions, cache?: Map<string, SessionLookup>): SessionLookup {
+  const cached = cache?.get(sessionId)
+  if (cached !== undefined) return cached
+  const session = getWorkbenchSession(sessionId, options.sessionStore)
+  cache?.set(sessionId, session)
+  return session
+}
+
+function isProvenProtectedRun(record: WorkbenchEvidenceRecord, options: WorkbenchEvidenceStoreOptions, cache?: Map<string, SessionLookup>): boolean {
   if (record.retentionClass !== 'active_run') return false
   const runId = record.owner.runId
   const sessionId = record.owner.sessionId || (runId ? `session-${runId}` : undefined)
   if (!sessionId) return false
-  const session = getWorkbenchSession(sessionId, options.sessionStore)
+  const session = lookupSession(sessionId, options, cache)
   if (!session || 'ok' in session) return false
   if (!['active', 'recovery_required'].includes(session.status)) return false
   if (runId && session.activeRunId !== runId) return false
   return !record.owner.sessionId || record.owner.sessionId === session.sessionId
+}
+
+function isExpendableReadResult(record: WorkbenchEvidenceRecord): boolean {
+  return record.kind === 'capability_result'
+    && (record.owner.operationId === 'readWorkbenchContext' || record.owner.operationId === 'getWorkbenchStatus')
+}
+
+function isAbandonedReadResult(record: WorkbenchEvidenceRecord, options: WorkbenchEvidenceStoreOptions, currentMs: number, cache?: Map<string, SessionLookup>): boolean {
+  if (!isExpendableReadResult(record) || !record.owner.sessionId) return false
+  const session = lookupSession(record.owner.sessionId, options, cache)
+  if (!session || 'ok' in session || session.status === 'active') return false
+  const sessionAge = currentMs - Date.parse(session.updatedAt)
+  const recordAge = currentMs - Date.parse(record.createdAt)
+  const grace = session.status === 'paused' ? ABANDONED_PAUSED_READ_RESULT_GRACE_MS : ABANDONED_READ_RESULT_GRACE_MS
+  return sessionAge >= grace && recordAge >= grace
 }
 
 function failure(code: WorkbenchEvidenceStoreFailureCode, message: string): WorkbenchEvidenceStoreFailure {
@@ -218,12 +245,13 @@ function reclaimExpiredRecordsForCapacity(
 ): void {
   const currentMs = Date.parse(nowIso(options))
   if (!Number.isFinite(currentMs)) return
+  const sessionCache = new Map<string, SessionLookup>()
 
   const reclaimable = store.records
     .filter(record => {
-      if (isProvenProtectedRun(record, options)) return false
+      if (isProvenProtectedRun(record, options, sessionCache) && !isAbandonedReadResult(record, options, currentMs, sessionCache)) return false
       const ageMs = currentMs - Date.parse(record.createdAt)
-      return ageMs >= retentionExpiryMs(record)
+      return ageMs >= retentionExpiryMs(record) || isAbandonedReadResult(record, options, currentMs, sessionCache)
     })
     .sort((a, b) => {
       const byTime = a.createdAt.localeCompare(b.createdAt)
@@ -414,6 +442,7 @@ export function pruneWorkbenchEvidence(params: {
   const currentMs = Date.parse(nowIso(options))
   if (!Number.isFinite(currentMs)) return failure('EVIDENCE_INVALID', 'The retention clock is invalid.')
   const result = withExclusiveStoreLock(options, store => {
+    const sessionCache = new Map<string, SessionLookup>()
     const candidates = store.records
       .filter(record =>
         (!params.sourceId || record.owner.sourceId === params.sourceId)
@@ -425,9 +454,9 @@ export function pruneWorkbenchEvidence(params: {
         return byTime !== 0 ? byTime : a.evidenceId.localeCompare(b.evidenceId)
       })
     const expired = candidates.filter(record => {
-      if (isProvenProtectedRun(record, options)) return false
+      if (isProvenProtectedRun(record, options, sessionCache) && !isAbandonedReadResult(record, options, currentMs, sessionCache)) return false
       const ageMs = currentMs - Date.parse(record.createdAt)
-      return ageMs >= retentionExpiryMs(record)
+      return ageMs >= retentionExpiryMs(record) || isAbandonedReadResult(record, options, currentMs, sessionCache)
     })
     const selected = expired.slice(0, batchSize)
     const selectedIds = new Set(selected.map(record => record.evidenceId))
@@ -435,8 +464,8 @@ export function pruneWorkbenchEvidence(params: {
     return {
       scanned: Math.min(candidates.length, batchSize),
       deleted: selected.length,
-      retainedActive: candidates.filter(record => isProvenProtectedRun(record, options)).length,
-      retainedRecent: candidates.filter(record => !selectedIds.has(record.evidenceId) && !isProvenProtectedRun(record, options)).length,
+      retainedActive: candidates.filter(record => isProvenProtectedRun(record, options, sessionCache)).length,
+      retainedRecent: candidates.filter(record => !selectedIds.has(record.evidenceId) && !isProvenProtectedRun(record, options, sessionCache)).length,
       truncated: expired.length > selected.length
     }
   })

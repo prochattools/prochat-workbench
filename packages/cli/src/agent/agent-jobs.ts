@@ -1348,9 +1348,17 @@ export function ensureWorkbenchActionRun(params: { sourceId: string; goal: strin
   const goal = sanitizeGoal(params.goal)
   if (!sourceId) throw new Error('sourceId is required')
 
-  let active = getActiveWorkbenchRun(sourceId)
-  if (!active || ['completed', 'failed', 'cancelled'].includes(String(active.status)) || isReconciledStaleWorkbenchRun(active as { status: string; blockedReason?: string })) {
-    const result = createWorkbenchRun({
+  const active = getActiveWorkbenchRun(sourceId)
+  const reusable = active
+    && ['queued', 'running', 'needs_confirmation'].includes(String(active.status))
+    && !isReconciledStaleWorkbenchRun(active as { status: string; blockedReason?: string })
+  if (!reusable) {
+    // A paused/blocked/recovery-required run is historical recovery state, not
+    // a valid bootstrap session for a fresh read. Starting a bounded action run
+    // here prevents the next read-only command from inheriting a non-active
+    // session and failing admission with session_invalid. The prior run remains
+    // available for explicit owner-directed resume.
+    const run = startAgentJob({
       sourceId,
       goal,
       requestId: params.requestId,
@@ -1359,26 +1367,27 @@ export function ensureWorkbenchActionRun(params: { sourceId: string; goal: strin
       autoPush: false,
       autonomyLevel: 'hands_off_safe'
     })
-    active = getActiveWorkbenchRun(sourceId) || {
-      id: result.run.id,
-      sessionId: workbenchSessionIdForRun(result.run.id),
-      sourceId,
-      status: result.run.status,
-      goal: result.run.goal
-    }
+    appendAgentEvent({
+      jobId: run.id,
+      sourceId: run.sourceId,
+      type: 'job_started',
+      message: 'Bounded Workbench action run started for the selected repository.',
+      status: run.status,
+      requestId: params.requestId
+    })
     return {
-      runId: String(active.id),
-      sessionId: String(active.sessionId || workbenchSessionIdForRun(String(active.id))),
+      runId: run.id,
+      sessionId: workbenchSessionIdForRun(run.id),
       sourceId,
-      status: String(active.status || result.run.status),
-      goal: String(active.goal || goal),
-      created: result.created
+      status: run.status,
+      goal: run.goal,
+      created: true
     }
   }
 
   return {
     runId: String(active.id),
-    sessionId: String(active.sessionId || workbenchSessionIdForRun(String(active.id))),
+    sessionId: workbenchSessionIdForRun(String(active.id)),
     sourceId,
     status: String(active.status),
     goal: String(active.goal || goal),
@@ -1392,8 +1401,12 @@ export function ensureWorkbenchActionRun(params: { sourceId: string; goal: strin
 export function createWorkbenchRun(params: Parameters<typeof startAgentJob>[0]): { run: AgentJob; created: boolean } {
   const sourceId = String(params.sourceId || '').trim()
   if (!sourceId) throw new Error('sourceId is required')
+  // Paused runs are historical recovery state, not an active-run conflict.
+  // Only a live or confirmation-gated run may reserve the source for a new
+  // create request; resuming paused or blocked history still requires its
+  // exact ID.
   let existing = listAgentJobs().find(job =>
-    job.sourceId === sourceId && !['completed', 'failed', 'cancelled'].includes(job.status)
+    job.sourceId === sourceId && ['queued', 'running', 'needs_confirmation'].includes(job.status)
   )
   if (existing) existing = reconcileStaleWorkbenchRun(existing)
   if (existing) {

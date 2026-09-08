@@ -11,6 +11,9 @@
       "@workbench/shared": [
         "../../packages/shared/src/index.ts"
       ],
+      "@workbench/shared/*": [
+        "../../packages/shared/src/*"
+      ],
       "@workbench/cli/telemetry-store": [
         "../../packages/cli/src/agent/telemetry-store.ts"
       ],
