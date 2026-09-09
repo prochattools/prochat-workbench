@@ -1046,6 +1046,21 @@ async function apply(body: Payload, context: PortableExecutionContext): Promise<
     const executionMode = body.executionMode === 'codex' || body.executionMode === 'direct' || body.executionMode === 'auto'
       ? body.executionMode
       : body.nativeDirectGoal === true ? 'direct' : 'auto'
+    if (body.goalDispatch && typeof body.goalDispatch === 'object' && !Array.isArray(body.goalDispatch)) {
+      // An explicit bounded packet is already the caller's scope authority.
+      // Honor it before AUTO's natural-language compiler so a read-only goal
+      // does not need an incidental index hit or fallback filename to start.
+      const result = dispatchWorkbenchGoal({
+        sourceId,
+        sourceRoot: source.path,
+        goal,
+        requestId: context.requestId,
+        documentationPath: typeof body.documentationPath === 'string' ? body.documentationPath : undefined,
+        maxIterations: typeof body.maxIterations === 'number' ? body.maxIterations : undefined,
+        dispatch: body.goalDispatch as WorkbenchGoalDispatchInput
+      })
+      return { statusCode: result.status === 'blocked' ? 409 : 202, body: { ...result, executionMode } }
+    }
     if (executionMode !== 'codex' || body.nativeDirectGoal === true) {
       const compilation = await compileNativeGoal({
         goal,
@@ -1105,18 +1120,6 @@ async function apply(body: Payload, context: PortableExecutionContext): Promise<
           nativeGoal: { intent: compilation.intent, route: compilation.route, reviewMessage: compilation.reviewMessage, compilerMs: compilation.compilerMs }
         }
       }
-    }
-    if (body.goalDispatch && typeof body.goalDispatch === 'object' && !Array.isArray(body.goalDispatch)) {
-      const result = dispatchWorkbenchGoal({
-        sourceId,
-        sourceRoot: source.path,
-        goal,
-        requestId: context.requestId,
-        documentationPath: typeof body.documentationPath === 'string' ? body.documentationPath : undefined,
-        maxIterations: typeof body.maxIterations === 'number' ? body.maxIterations : undefined,
-        dispatch: body.goalDispatch as WorkbenchGoalDispatchInput
-      })
-      return { statusCode: result.status === 'blocked' ? 409 : 202, body: result as unknown as Record<string, unknown> }
     }
     const result = createWorkbenchRun({ sourceId, goal, documentationPath: typeof body.documentationPath === 'string' ? body.documentationPath : undefined, maxIterations: typeof body.maxIterations === 'number' ? body.maxIterations : undefined, autoCommit: body.autoCommit === true, autoPush: false, autonomyLevel: 'hands_off_safe' })
     return { statusCode: 200, body: { status: 'ok', created: result.created, verified: true, executionMode, providerStatus: projectCodexProviderStatus({ directCapability: true }), run: getActiveWorkbenchRun(sourceId) || result.run } }

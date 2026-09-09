@@ -87,6 +87,7 @@ const MAX_LIST_RECORDS = 100
 const MAX_CAPACITY_RECLAIM_RECORDS_PER_APPEND = 100
 const ABANDONED_READ_RESULT_GRACE_MS = 2 * 60 * 60_000
 const ABANDONED_PAUSED_READ_RESULT_GRACE_MS = 7 * 24 * 60 * 60_000
+const CAPACITY_RECLAIM_READ_RESULT_GRACE_MS = 15 * 60_000
 
 function storePath(options: WorkbenchEvidenceStoreOptions = {}): string {
   return options.storePath || DEFAULT_STORE_PATH
@@ -139,6 +140,17 @@ function isAbandonedReadResult(record: WorkbenchEvidenceRecord, options: Workben
   const recordAge = currentMs - Date.parse(record.createdAt)
   const grace = session.status === 'paused' ? ABANDONED_PAUSED_READ_RESULT_GRACE_MS : ABANDONED_READ_RESULT_GRACE_MS
   return sessionAge >= grace && recordAge >= grace
+}
+
+function isCapacityReclaimableReadResult(record: WorkbenchEvidenceRecord, options: WorkbenchEvidenceStoreOptions, currentMs: number, cache?: Map<string, SessionLookup>): boolean {
+  if (!isExpendableReadResult(record)) return false
+  if (isProvenProtectedRun(record, options, cache)) return false
+  const recordAge = currentMs - Date.parse(record.createdAt)
+  if (!Number.isFinite(recordAge)) return false
+  // Read results have a durable recovery copy. Under capacity pressure they
+  // may be reclaimed after a short grace period, while mutation/validation
+  // evidence remains protected by the active/recovery session authority.
+  return recordAge >= CAPACITY_RECLAIM_READ_RESULT_GRACE_MS
 }
 
 function failure(code: WorkbenchEvidenceStoreFailureCode, message: string): WorkbenchEvidenceStoreFailure {
@@ -251,7 +263,9 @@ function reclaimExpiredRecordsForCapacity(
     .filter(record => {
       if (isProvenProtectedRun(record, options, sessionCache) && !isAbandonedReadResult(record, options, currentMs, sessionCache)) return false
       const ageMs = currentMs - Date.parse(record.createdAt)
-      return ageMs >= retentionExpiryMs(record) || isAbandonedReadResult(record, options, currentMs, sessionCache)
+      return ageMs >= retentionExpiryMs(record)
+        || isAbandonedReadResult(record, options, currentMs, sessionCache)
+        || isCapacityReclaimableReadResult(record, options, currentMs, sessionCache)
     })
     .sort((a, b) => {
       const byTime = a.createdAt.localeCompare(b.createdAt)
@@ -473,7 +487,7 @@ export function pruneWorkbenchEvidence(params: {
 }
 
 export function inspectWorkbenchEvidenceStore(options: WorkbenchEvidenceStoreOptions = {}):
-  | { ok: true; version: typeof WORKBENCH_EVIDENCE_STORE_VERSION; recordCount: number; storeBytes: number; kinds: Record<WorkbenchEvidenceKind, number> }
+  | { ok: true; version: typeof WORKBENCH_EVIDENCE_STORE_VERSION; recordCount: number; storeBytes: number; maxRecords: number; maxStoreBytes: number; eligibleForEviction: number; pinnedRecords: number; oldestEligibleAt?: string; kinds: Record<WorkbenchEvidenceKind, number> }
   | WorkbenchEvidenceStoreFailure {
   const store = readStore(options)
   if (isStoreFailure(store)) return store
@@ -484,11 +498,28 @@ export function inspectWorkbenchEvidenceStore(options: WorkbenchEvidenceStoreOpt
     capability_result: 0
   }
   for (const record of store.records) kinds[record.kind] += 1
+  const currentMs = Date.parse(nowIso(options))
+  const sessionCache = new Map<string, SessionLookup>()
+  const eligible = store.records.filter(record => {
+    if (!Number.isFinite(currentMs)) return false
+    if (isProvenProtectedRun(record, options, sessionCache) && !isAbandonedReadResult(record, options, currentMs, sessionCache)) return false
+    const ageMs = currentMs - Date.parse(record.createdAt)
+    return ageMs >= retentionExpiryMs(record)
+      || isAbandonedReadResult(record, options, currentMs, sessionCache)
+      || isCapacityReclaimableReadResult(record, options, currentMs, sessionCache)
+  }).sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.evidenceId.localeCompare(right.evidenceId))
+  const maxRecords = Math.min(WORKBENCH_EVIDENCE_MAX_RECORDS, Math.max(1, Math.trunc(options.maxRecords || WORKBENCH_EVIDENCE_MAX_RECORDS)))
+  const maxStoreBytes = Math.min(WORKBENCH_EVIDENCE_MAX_STORE_BYTES, Math.max(1, Math.trunc(options.maxStoreBytes || WORKBENCH_EVIDENCE_MAX_STORE_BYTES)))
   return {
     ok: true,
     version: WORKBENCH_EVIDENCE_STORE_VERSION,
     recordCount: store.records.length,
     storeBytes: serializedStoreBytes(store),
+    maxRecords,
+    maxStoreBytes,
+    eligibleForEviction: eligible.length,
+    pinnedRecords: store.records.length - eligible.length,
+    ...(eligible[0] ? { oldestEligibleAt: eligible[0].createdAt } : {}),
     kinds
   }
 }

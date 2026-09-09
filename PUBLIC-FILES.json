@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "87c4f9d8a5ae96007c034d6329b1f9dfadf0a8d7",
+  "sourceCommit": "4a6cf06e349543ca517ff2c362a6b52efab0d65c",
   "files": [
     {
       "path": ".gitignore",
@@ -40,7 +40,7 @@
     {
       "path": "PUBLIC-SOURCE.json",
       "bytes": 323,
-      "sha256": "9527d6cfc19456a200e722758e7a7c9926933d6403b48dd416bb9d03789c1c3e"
+      "sha256": "4f074293375136c38a9631dae7e8c114d2f22830d4fb27cfa8190d2a61a6dc4a"
     },
     {
       "path": "README.md",
@@ -70,7 +70,7 @@
     {
       "path": "apps/web/package.json",
       "bytes": 1024,
-      "sha256": "abe0850524ba2bb1e9f4569aec983cde6619935f6c5ca6d0b55269ac2578987a"
+      "sha256": "c6befa0e6e79c7add11afce19f73e24890c269858b98c3a2976105cb156b3228"
     },
     {
       "path": "apps/web/postcss.config.js",
@@ -785,7 +785,7 @@
     {
       "path": "package.json",
       "bytes": 5927,
-      "sha256": "65082625e34f3fdae2357031f90d3f1de7b1eed39699a01f95e0695346822ca0"
+      "sha256": "7940d9016e1f6d8ba22f2dca8f4db2133f45674637f03e3b46c502090824a0f4"
     },
     {
       "path": "packages/bridge/device-client.js",
@@ -865,7 +865,7 @@
     {
       "path": "packages/cli/package.json",
       "bytes": 1031,
-      "sha256": "4646692ec5fb07ed2cae21c0614b5e940628a92889a0b1a1c4215aa45382a0ed"
+      "sha256": "7452acfc2fb30bebf972af30876cab690412076994ea7d8f9473530da607f935"
     },
     {
       "path": "packages/cli/src/agent/action-round-trip-artifact.ts",
@@ -909,8 +909,8 @@
     },
     {
       "path": "packages/cli/src/agent/agent-jobs.ts",
-      "bytes": 63159,
-      "sha256": "10b20a2b375e0d8c2bb38cb5c55e0957a5dba8fcd58ff19362b423c4901d5485"
+      "bytes": 64642,
+      "sha256": "bc0c43f0b1d7825d912c7bf97b36cec77b7cda4d5eb32ceece1e447939a7a66c"
     },
     {
       "path": "packages/cli/src/agent/agent-runtime.ts",
@@ -1359,8 +1359,8 @@
     },
     {
       "path": "packages/cli/src/agent/portable-mutation-handlers.ts",
-      "bytes": 72340,
-      "sha256": "c91009c2bebbf84c775391e6e7f4808f7b86722b962b8b5af706532898a89a4e"
+      "bytes": 72557,
+      "sha256": "ad7108ec7016bc0730ef9ef87028e97269370d72bc3e186f6ee7f93d7b231fef"
     },
     {
       "path": "packages/cli/src/agent/portable-operation-errors.ts",
@@ -1369,8 +1369,8 @@
     },
     {
       "path": "packages/cli/src/agent/portable-read-handlers.ts",
-      "bytes": 47133,
-      "sha256": "68d4f5e4aafbf59f3fbdc0c2a7d60ae1398368b90983b04956212c05481fa921"
+      "bytes": 45915,
+      "sha256": "7aa10ce0d77cc375bb5ee523b5c21c476adeaef98ad39dd3f0dc2257f1e03ab1"
     },
     {
       "path": "packages/cli/src/agent/prepare-task-context.test.ts",
@@ -1534,8 +1534,8 @@
     },
     {
       "path": "packages/cli/src/agent/workbench-evidence-store.ts",
-      "bytes": 20422,
-      "sha256": "4069f17267ebc99a48c4599bb0303f5d228a98e255d7c8af73b1453ba2094f78"
+      "bytes": 22630,
+      "sha256": "75b6e8a0a921bab31da71de6b48cdd659890f14f0d8ac93a6fec2f74600f91bf"
     },
     {
       "path": "packages/cli/src/agent/workbench-execution-capsule.ts",
@@ -1609,8 +1609,8 @@
     },
     {
       "path": "packages/cli/src/agent/workbench-read-result-recovery.ts",
-      "bytes": 16615,
-      "sha256": "ca0dd92a37af76b0bed4b8b9ac847a9dc99f8cadc1cd9ccc9ee7b3388969a36d"
+      "bytes": 18909,
+      "sha256": "01b58b789dd375f9f9c4f0e27fde4dff87cdf908037024c3181a83ee1edb8864"
     },
     {
       "path": "packages/cli/src/agent/workbench-repair-state.ts",
@@ -1800,7 +1800,7 @@
     {
       "path": "packages/mcp/package.json",
       "bytes": 11214,
-      "sha256": "50a45de157015e6cdccc28da074af8ddafe8927fc421b13e8611662329438556"
+      "sha256": "fbe50a750e21d4f5053d06f21245c03e4bbb2b2291a9b05f1ea2049b3778a78c"
     },
     {
       "path": "packages/mcp/src/adapter-contract.ts",

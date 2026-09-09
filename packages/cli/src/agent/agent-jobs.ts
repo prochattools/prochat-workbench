@@ -10,6 +10,7 @@ import {
   WORKBENCH_STALE_RUN_REASON
 } from './workbench-run-lifecycle'
 import { synchronizeWorkbenchRunSession, workbenchSessionIdForRun } from './workbench-run-session'
+import { getWorkbenchSession, type WorkbenchSessionStoreOptions } from './workbench-session-store'
 import {
   createRunExecutionBudget,
   normalizeRunExecutionBudget,
@@ -1343,6 +1344,35 @@ export type WorkbenchActionRunBinding = {
   created: boolean
 }
 
+export type WorkbenchActionSessionReuseInput = {
+  sourceId: string
+  goal: string
+  run: Record<string, unknown>
+  session?: WorkbenchSessionStoreOptions
+}
+
+/**
+ * A read bootstrap may expose a run only when the same task still owns a
+ * command-admissible session. Source/status alone is insufficient: a long-
+ * lived source can retain an unrelated running task whose session has been
+ * paused, replaced, or otherwise detached from the run.
+ */
+export function canReuseWorkbenchSessionForCommand(input: WorkbenchActionSessionReuseInput): boolean {
+  const runId = typeof input.run.id === 'string' ? input.run.id : ''
+  const runSourceId = typeof input.run.sourceId === 'string' ? input.run.sourceId : ''
+  const runGoal = typeof input.run.goal === 'string' ? input.run.goal : ''
+  const runStatus = typeof input.run.status === 'string' ? input.run.status : ''
+  if (!runId || runSourceId !== input.sourceId || runGoal !== input.goal) return false
+  if (!['queued', 'running', 'needs_confirmation'].includes(runStatus)) return false
+
+  const session = getWorkbenchSession(workbenchSessionIdForRun(runId), input.session)
+  if (!session || 'ok' in session) return false
+  if (session.status !== 'active') return false
+  if (session.activeRunId !== runId) return false
+  if (session.lockedSourceIds.length !== 1 || session.lockedSourceIds[0] !== input.sourceId) return false
+  return true
+}
+
 export function ensureWorkbenchActionRun(params: { sourceId: string; goal: string; requestId?: string }): WorkbenchActionRunBinding {
   const sourceId = String(params.sourceId || '').trim()
   const goal = sanitizeGoal(params.goal)
@@ -1350,8 +1380,8 @@ export function ensureWorkbenchActionRun(params: { sourceId: string; goal: strin
 
   const active = getActiveWorkbenchRun(sourceId)
   const reusable = active
-    && ['queued', 'running', 'needs_confirmation'].includes(String(active.status))
     && !isReconciledStaleWorkbenchRun(active as { status: string; blockedReason?: string })
+    && canReuseWorkbenchSessionForCommand({ sourceId, goal, run: active })
   if (!reusable) {
     // A paused/blocked/recovery-required run is historical recovery state, not
     // a valid bootstrap session for a fresh read. Starting a bounded action run

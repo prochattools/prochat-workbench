@@ -19,6 +19,7 @@ const DEFAULT_STORE_PATH = path.join(getConfigDir(), 'workbench-read-results.jso
 const RECONCILED_RETENTION_MS = 24 * 60 * 60_000
 const TERMINAL_PENDING_RETENTION_MS = 24 * 60 * 60_000
 const PAUSED_PENDING_RETENTION_MS = 7 * 24 * 60 * 60_000
+const ORPHANED_PENDING_CAPACITY_GRACE_MS = 15 * 60_000
 
 export type WorkbenchReadResultRecoveryOptions = {
   storePath?: string
@@ -185,9 +186,18 @@ function pendingRecordIsAbandoned(record: WorkbenchReadResultRecoveryRecord, now
   return sessionId.length > 0 && sessionAge >= retention && recordAge >= retention
 }
 
+function pendingRecordIsCapacityReclaimable(record: WorkbenchReadResultRecoveryRecord, nowMs: number, options: WorkbenchReadResultRecoveryOptions): boolean {
+  if (record.status !== 'pending' || !record.owner.sessionId) return false
+  const session = getWorkbenchSession(record.owner.sessionId, options.sessionStore)
+  // A session-store failure is not proof that the owner is gone. Keep the
+  // record pinned until the authority can be read again.
+  if (session !== undefined) return false
+  return ageMs(record.updatedAt, nowMs) >= ORPHANED_PENDING_CAPACITY_GRACE_MS
+}
+
 function recordIsExpiredOrAbandoned(record: WorkbenchReadResultRecoveryRecord, nowMs: number, options: WorkbenchReadResultRecoveryOptions): boolean {
   if (record.status === 'reconciled') return ageMs(record.updatedAt, nowMs) >= RECONCILED_RETENTION_MS
-  return pendingRecordIsAbandoned(record, nowMs, options)
+  return pendingRecordIsAbandoned(record, nowMs, options) || pendingRecordIsCapacityReclaimable(record, nowMs, options)
 }
 
 function compactRecords(store: Store, options: WorkbenchReadResultRecoveryOptions): void {
@@ -197,7 +207,7 @@ function compactRecords(store: Store, options: WorkbenchReadResultRecoveryOption
   const serializedSize = (records: WorkbenchReadResultRecoveryRecord[]) => Buffer.byteLength(JSON.stringify({ version: WORKBENCH_READ_RESULT_RECOVERY_VERSION, updatedAt: nowIso(options), records }), 'utf8')
   const evictable = () => retained
     .map((record, index) => ({ record, index }))
-    .filter(item => item.record.status === 'reconciled' || pendingRecordIsAbandoned(item.record, nowMs, options))
+    .filter(item => item.record.status === 'reconciled' || pendingRecordIsAbandoned(item.record, nowMs, options) || pendingRecordIsCapacityReclaimable(item.record, nowMs, options))
     .sort((left, right) => Date.parse(left.record.updatedAt) - Date.parse(right.record.updatedAt) || left.record.recoveryId.localeCompare(right.record.recoveryId))
 
   while (retained.length > configured.maxRecords || serializedSize(retained) > configured.maxStoreBytes) {
@@ -349,4 +359,32 @@ export function pruneWorkbenchReadResultRecovery(options: WorkbenchReadResultRec
     }
   })
   return result
+}
+
+export function inspectWorkbenchReadResultRecovery(options: WorkbenchReadResultRecoveryOptions = {}):
+  | { ok: true; version: typeof WORKBENCH_READ_RESULT_RECOVERY_VERSION; recordCount: number; storeBytes: number; maxRecords: number; maxStoreBytes: number; eligibleForEviction: number; pinnedRecords: number; oldestEligibleAt?: string; statuses: Record<WorkbenchReadResultRecoveryRecord['status'], number> }
+  | ReadResultRecoveryFailure {
+  const store = readStore(options)
+  if (isRecoveryFailure(store)) return store
+  const configured = limits(options)
+  const currentMs = Date.parse(nowIso(options))
+  const eligible = Number.isFinite(currentMs)
+    ? store.records
+      .filter(record => recordIsExpiredOrAbandoned(record, currentMs, options))
+      .sort((left, right) => Date.parse(left.updatedAt) - Date.parse(right.updatedAt) || left.recoveryId.localeCompare(right.recoveryId))
+    : []
+  const statuses: Record<WorkbenchReadResultRecoveryRecord['status'], number> = { pending: 0, reconciled: 0 }
+  for (const record of store.records) statuses[record.status] += 1
+  return {
+    ok: true,
+    version: WORKBENCH_READ_RESULT_RECOVERY_VERSION,
+    recordCount: store.records.length,
+    storeBytes: Buffer.byteLength(JSON.stringify(store), 'utf8'),
+    maxRecords: configured.maxRecords,
+    maxStoreBytes: configured.maxStoreBytes,
+    eligibleForEviction: eligible.length,
+    pinnedRecords: store.records.length - eligible.length,
+    ...(eligible[0] ? { oldestEligibleAt: eligible[0].updatedAt } : {}),
+    statuses
+  }
 }

@@ -277,31 +277,14 @@ export function isSourceSearchReady(state: { indexStatus?: string } | null | und
   return state?.indexStatus === 'ready'
 }
 
-function requireSearchReady(sourceIds: string[], dependencies: PortableReadHandlerDependencies = {}): void {
+function requestSearchRecovery(sourceIds: string[], dependencies: PortableReadHandlerDependencies = {}): void {
   const blocked = sourceIds
     .map(sourceId => ({ sourceId, state: getSourceIndexState(sourceId) }))
     .filter(({ state }) => !isSourceSearchReady(state))
   if (!blocked.length) return
-  const recovery = dependencies.requestSourceIndexRecovery?.(blocked.map(item => item.sourceId)) || []
-  const details = blocked.map(item => ({
-    sourceId: item.sourceId,
-    indexStatus: item.state?.indexStatus || 'unknown',
-    indexError: item.state?.indexError,
-    indexedFileCount: item.state?.indexedFileCount,
-    recoveryAction: recovery.find(candidate => candidate.sourceId === item.sourceId)?.status === 'unavailable'
-      ? 'Choose a ready source'
-      : recovery.find(candidate => candidate.sourceId === item.sourceId)?.status === 'already_ready'
-        ? 'Retry the same bounded search'
-        : 'Workbench queued source readiness automatically'
-  }))
-  const message = blocked.map(item => item.state?.indexStatus === 'pending'
-    ? `${item.sourceId} is being prepared for search automatically.`
-    : item.state?.indexStatus === 'indexing'
-      ? `${item.sourceId} is being reindexed. Search will be available after the new index is ready.`
-      : item.state?.indexStatus === 'failed'
-        ? `${item.sourceId} failed to index: ${item.state.indexError || 'unknown error'}. Workbench queued an automatic recovery attempt.`
-    : `${item.sourceId} is not ready for search; Workbench is preparing it automatically.`).join(' ')
-  throw new PortableOperationError('dependency_unavailable', `Source(s) not ready for search: ${blocked.map(item => item.sourceId).join(', ')}`, { details: { readinessMessage: message, sources: details, recovery } })
+  // The queue coordinator deduplicates an already pending refresh. Search
+  // remains available through makeSearcherWithFilesystemFallback below.
+  dependencies.requestSourceIndexRecovery?.(blocked.map(item => item.sourceId))
 }
 
 function brokerReadMetadata(sourceId: string, executionContext?: PortableExecutionContext, payload?: Payload) {
@@ -469,7 +452,7 @@ async function readContext(payload: Payload, executionContext?: PortableExecutio
     const query = asString(payload.query)
     const selected = sourceIds(payload, executionContext)
     if (!query || !selected.length) fail('invalid_request', 'query and sourceId or sourceIds are required')
-    requireSearchReady(selected, dependencies)
+    requestSearchRecovery(selected, dependencies)
     const searcherResult = await makeSearcherWithFilesystemFallback(selected, dependencies)
     const search = searcherResult.searcher.searchBounded(query, bounded(payload.limit, 5, 1, MAX_PATHS), selected, { startedAt: Date.now(), deadlineMs: 1200, maxDocsPerSource: 1500, maxContentDocsPerSource: 350 })
     const matches = search.results.slice(0, MAX_PATHS)
@@ -553,7 +536,7 @@ async function readContext(payload: Payload, executionContext?: PortableExecutio
     const query = asString(payload.query)
     const selected = sourceIds(payload, executionContext)
     if (!query || !selected.length) fail('invalid_request', 'query and sourceId or sourceIds are required')
-    if (mode !== 'prepare_task_context') requireSearchReady(selected, dependencies)
+    if (mode !== 'prepare_task_context') requestSearchRecovery(selected, dependencies)
     if (mode === 'prepare_task_context' && selected.length !== 1) {
       fail('dependency_unavailable', 'Context Broker requires one authorized source for task context preparation.')
     }
@@ -739,8 +722,7 @@ async function contextReadWithDependencies(payload: Payload, context: PortableEx
       return {
         ...recoveredResult,
         resultRef: recovered.evidenceId,
-        resultPersistence: { status: 'recovery_pending', authoritative: false },
-        evidenceUnavailable: evidence.evidenceUnavailable
+        resultPersistence: { status: 'recovery_pending', authoritative: false }
       }
     }
     const result = asString(payload.mode) === 'read_paths'
@@ -782,8 +764,7 @@ async function contextReadWithDependencies(payload: Payload, context: PortableEx
       return {
         ...durableResult,
         resultRef,
-        resultPersistence: { status: 'recovery_pending', authoritative: false, ...(recovery && recovery.ok ? { recoveryId: recovery.record.recoveryId } : {}), ...(recoveryWarning ? { warning: recoveryWarning } : {}) },
-        evidenceUnavailable: evidence.evidenceUnavailable
+        resultPersistence: { status: 'recovery_pending', authoritative: false, ...(recovery && recovery.ok ? { recoveryId: recovery.record.recoveryId } : {}), ...(recoveryWarning ? { warning: 'Result recovery is temporarily degraded; the repository read itself completed.' } : {}) }
       }
     }
     const authoritativeRef = evidence.evidenceRefs[0].evidenceId
@@ -792,7 +773,7 @@ async function contextReadWithDependencies(payload: Payload, context: PortableEx
     return {
       ...durableResult,
       resultRef: authoritativeRef,
-      ...(recoveryWarning ? { resultPersistence: { status: 'authoritative', authoritative: true, warning: recoveryWarning } } : {})
+      ...(recoveryWarning ? { resultPersistence: { status: 'authoritative', authoritative: true, warning: 'Result recovery is temporarily degraded; the repository read itself completed.' } } : {})
     }
   } catch (error) {
     if (binding) {
