@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "4a6cf06e349543ca517ff2c362a6b52efab0d65c",
+  "sourceCommit": "0762f0fa4df5a290db748b86d662f82925294401",
   "files": [
     {
       "path": ".gitignore",
@@ -40,7 +40,7 @@
     {
       "path": "PUBLIC-SOURCE.json",
       "bytes": 323,
-      "sha256": "4f074293375136c38a9631dae7e8c114d2f22830d4fb27cfa8190d2a61a6dc4a"
+      "sha256": "391e36c27c32e98b1ce63d51a4ebebe22079cc9eec06ae6144aab72312510ed0"
     },
     {
       "path": "README.md",
@@ -70,7 +70,7 @@
     {
       "path": "apps/web/package.json",
       "bytes": 1024,
-      "sha256": "c6befa0e6e79c7add11afce19f73e24890c269858b98c3a2976105cb156b3228"
+      "sha256": "68c978b27222833edd22e98eaba0b35929ee3cb7caaf41094654d8e6a36052c5"
     },
     {
       "path": "apps/web/postcss.config.js",
@@ -785,7 +785,7 @@
     {
       "path": "package.json",
       "bytes": 5927,
-      "sha256": "7940d9016e1f6d8ba22f2dca8f4db2133f45674637f03e3b46c502090824a0f4"
+      "sha256": "42c497c6711b7093533def78490331b602d4ca55d73d0e76ca673d09658ee6af"
     },
     {
       "path": "packages/bridge/device-client.js",
@@ -865,7 +865,7 @@
     {
       "path": "packages/cli/package.json",
       "bytes": 1031,
-      "sha256": "7452acfc2fb30bebf972af30876cab690412076994ea7d8f9473530da607f935"
+      "sha256": "1f0f1bd8b123b9f2cb449de8bef325e39efa6f517b7749b6701aa26757db3a2c"
     },
     {
       "path": "packages/cli/src/agent/action-round-trip-artifact.ts",
@@ -1579,8 +1579,8 @@
     },
     {
       "path": "packages/cli/src/agent/workbench-packet-executor.ts",
-      "bytes": 41428,
-      "sha256": "56136c7f073f5c9707b0a4973ef7bdc8ca9cdc2349a20243b59c7ec4477c1eb5"
+      "bytes": 41821,
+      "sha256": "5f5cb434abd39441cb9aa915538dd74817f40ebf40eae290fe1fb969a51bc587"
     },
     {
       "path": "packages/cli/src/agent/workbench-packet-plan.ts",
@@ -1800,7 +1800,7 @@
     {
       "path": "packages/mcp/package.json",
       "bytes": 11214,
-      "sha256": "fbe50a750e21d4f5053d06f21245c03e4bbb2b2291a9b05f1ea2049b3778a78c"
+      "sha256": "655c20fec6df67e4e3e6fcc7630fccbeb0325c9ad36798b8cbb499f3d9921268"
     },
     {
       "path": "packages/mcp/src/adapter-contract.ts",

@@ -1,6 +1,6 @@
 {
   "name": "workbench",
-  "version": "1.3.20-beta",
+  "version": "1.3.21-beta",
   "private": true,
   "license": "AGPL-3.0-only",
   "description": "Local CLI agent for ProChat Workbench",

@@ -427,18 +427,24 @@ export async function executeWorkbenchPacket(params: {
     .flatMap(phase => phase.tasks)
     .find(candidate => candidate.id === record.packet.taskId)
 
-  try {
-    assertCleanPacketPaths(params.sourceRoot, record.exactPaths, shouldCommit)
-  } catch (error) {
-    return {
-      status: 'rejected',
-      packetId: params.packetId,
-      writesPerformed: false,
-      rolledBack: false,
-      planHash: planResult.plan.planHash,
-      completedSteps: 0,
-      changedPaths: [],
-      errors: [{ code: 'PACKET_GIT_STATE_NOT_ISOLATED', message: error instanceof Error ? error.message : String(error) }]
+  // Read-only packets intentionally tolerate unrelated dirty worktree paths.
+  // The packet has no mutation authority, so requiring a globally clean tree
+  // would make safe investigation goals fail because of the user's unrelated
+  // local edits. Mutation packets still require exact-path isolation.
+  if (record.packet.steps.length > 0 || shouldCommit) {
+    try {
+      assertCleanPacketPaths(params.sourceRoot, record.exactPaths, shouldCommit)
+    } catch (error) {
+      return {
+        status: 'rejected',
+        packetId: params.packetId,
+        writesPerformed: false,
+        rolledBack: false,
+        planHash: planResult.plan.planHash,
+        completedSteps: 0,
+        changedPaths: [],
+        errors: [{ code: 'PACKET_GIT_STATE_NOT_ISOLATED', message: error instanceof Error ? error.message : String(error) }]
+      }
     }
   }
 
