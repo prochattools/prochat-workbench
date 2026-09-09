@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "product": "ProChat Workbench Local",
-  "version": "1.3.21-beta",
-  "sourceCommit": "0762f0fa4df5a290db748b86d662f82925294401",
-  "exportedAt": "2026-09-09T11:12:52+01:00",
+  "version": "1.3.22-beta",
+  "sourceCommit": "a8bf469883a9bc98edbc078f9203294adaf49f4b",
+  "exportedAt": "2026-09-09T13:27:50+01:00",
   "exportFormatVersion": 1,
   "license": "AGPL-3.0-only",
   "publicScope": "Workbench Local",
