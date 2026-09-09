@@ -1,6 +1,6 @@
 {
   "name": "workbench",
-  "version": "1.3.22-beta",
+  "version": "1.3.24-beta",
   "private": true,
   "license": "AGPL-3.0-only",
   "description": "ProChat Workbench Local: guarded local execution for ChatGPT-first repository workflows.",

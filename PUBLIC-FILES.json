@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceCommit": "a8bf469883a9bc98edbc078f9203294adaf49f4b",
+  "sourceCommit": "2a33a934dac1809d9421366d4b01174a1eb3dfa8",
   "files": [
     {
       "path": ".gitignore",
@@ -40,7 +40,7 @@
     {
       "path": "PUBLIC-SOURCE.json",
       "bytes": 323,
-      "sha256": "b9321eb2fc46c7bc042ac9682716aae228b3a0ac2e0cc8931271279951db70c8"
+      "sha256": "9ef4580703494222136c2b57c805df02ab57ea0f3274e6bc0270cc520e0fdc52"
     },
     {
       "path": "README.md",
@@ -70,7 +70,7 @@
     {
       "path": "apps/web/package.json",
       "bytes": 1024,
-      "sha256": "5dcb65520048be885174d7914fe80f9169db70c8b42a47b7e0bf637f4ce8120f"
+      "sha256": "f01533300abc59f93a852d4822bd14bd1f620f9b95d9cab5ed484ec039f88000"
     },
     {
       "path": "apps/web/postcss.config.js",
@@ -785,7 +785,7 @@
     {
       "path": "package.json",
       "bytes": 5927,
-      "sha256": "545e6cce4331c63a1df676d2e52faf9ea3f63a1b7a210aa267ac1bc22483cb50"
+      "sha256": "20847e83c218f8f6377d9c9f380be4a872d8492efb6afde1407d5aed77a1943a"
     },
     {
       "path": "packages/bridge/device-client.js",
@@ -865,7 +865,7 @@
     {
       "path": "packages/cli/package.json",
       "bytes": 1031,
-      "sha256": "03c9fd92160a90d29137c2e8891c8c13317e9b3a396432ba05decd55b60697d8"
+      "sha256": "a00550979c0f61a27e74aacf0476c83c80949665c91bf989eb93ee29fb812b05"
     },
     {
       "path": "packages/cli/src/agent/action-round-trip-artifact.ts",
@@ -909,8 +909,8 @@
     },
     {
       "path": "packages/cli/src/agent/agent-jobs.ts",
-      "bytes": 64642,
-      "sha256": "bc0c43f0b1d7825d912c7bf97b36cec77b7cda4d5eb32ceece1e447939a7a66c"
+      "bytes": 67030,
+      "sha256": "ac03fcd64068846db2823405ba77bebe48e075ed5cc9aa4772e482ef856de9f1"
     },
     {
       "path": "packages/cli/src/agent/agent-runtime.ts",
@@ -1324,13 +1324,13 @@
     },
     {
       "path": "packages/cli/src/agent/native-goal-compiler.test.ts",
-      "bytes": 4517,
-      "sha256": "f87a4e07373f0bc719668421c8d3c123f31b8563b6e94cf3f3cef4c9626f42f3"
+      "bytes": 11471,
+      "sha256": "d878281c68467879bcc5ab3cdbfc6e061ac1e17951f297568b412808eaf8ad33"
     },
     {
       "path": "packages/cli/src/agent/native-goal-compiler.ts",
-      "bytes": 12058,
-      "sha256": "af0caf510a40610feae297dcb6be6251935fd6110fe959b58dd80af9a8f83793"
+      "bytes": 15824,
+      "sha256": "c7b0291a8960355a604a1c150cfae1146e81542e19f2a409dfca0900c51f22d7"
     },
     {
       "path": "packages/cli/src/agent/native-request-ledger.ts",
@@ -1359,8 +1359,8 @@
     },
     {
       "path": "packages/cli/src/agent/portable-mutation-handlers.ts",
-      "bytes": 72557,
-      "sha256": "ad7108ec7016bc0730ef9ef87028e97269370d72bc3e186f6ee7f93d7b231fef"
+      "bytes": 74536,
+      "sha256": "229032180642672cbd828ad9027398f16f22237585b35f28ddb13678487f1cf5"
     },
     {
       "path": "packages/cli/src/agent/portable-operation-errors.ts",
@@ -1379,8 +1379,8 @@
     },
     {
       "path": "packages/cli/src/agent/prepare-task-context.ts",
-      "bytes": 19764,
-      "sha256": "ed9bc115bd9fdedb0aa2c1dac44ee3ef8686ff3b619eb14c089f390f6a7b2ceb"
+      "bytes": 20073,
+      "sha256": "73391e698c874aacd39c20fc477ce7d950079754997070d82ad66fb8e26aa218"
     },
     {
       "path": "packages/cli/src/agent/prompt-packet-compiler.ts",
@@ -1439,8 +1439,8 @@
     },
     {
       "path": "packages/cli/src/agent/safe-access.ts",
-      "bytes": 41508,
-      "sha256": "903591a8187c12e9339236c382b38a99182f3418594d39c370c88b506937c803"
+      "bytes": 41515,
+      "sha256": "45e31946c8fc19e878b943e2188944c0bf6ad1dba6e96a30d852e01b7b0dd838"
     },
     {
       "path": "packages/cli/src/agent/search.ts",
@@ -1449,8 +1449,8 @@
     },
     {
       "path": "packages/cli/src/agent/server.ts",
-      "bytes": 133824,
-      "sha256": "eef04c85f5ebecc2a922b5f599bc565d701db38ca0160ee922ecd58a89656d36"
+      "bytes": 135848,
+      "sha256": "0e744f2ade5e13ee0b1a3a9dc2ff845e53ef3d326b6d9a502da7103e9c91ad9f"
     },
     {
       "path": "packages/cli/src/agent/slo-health.ts",
@@ -1494,8 +1494,8 @@
     },
     {
       "path": "packages/cli/src/agent/workbench-admission-orchestrator.ts",
-      "bytes": 9124,
-      "sha256": "99c06ee989ec425ddd0ecfb31aca54e1d78a61a108f6a3b14a4f27d6e38eeedd"
+      "bytes": 11196,
+      "sha256": "d90f91ddb5941aac63cfbcf3ac0e6c07ff6d3e8753e64e51ee2243aade7f11a3"
     },
     {
       "path": "packages/cli/src/agent/workbench-approval-intents.ts",
@@ -1553,14 +1553,24 @@
       "sha256": "055558d5d878e10abc883c0fa2274ca3a664189eea71305a81124d35a5a9d827"
     },
     {
+      "path": "packages/cli/src/agent/workbench-follow-up-context-types.ts",
+      "bytes": 127,
+      "sha256": "ae57b7003b39d4e41695c14e03eebe3b1d3994a632f2614fcc9543c402789692"
+    },
+    {
+      "path": "packages/cli/src/agent/workbench-follow-up-context.ts",
+      "bytes": 6753,
+      "sha256": "32058f0e4b0cb07ec106bcf4e3ec6334f1bc16a2d013a99fe7dab5b11829ceef"
+    },
+    {
       "path": "packages/cli/src/agent/workbench-global-budget-store.ts",
       "bytes": 15230,
       "sha256": "ead015733a03d77e6d05c79ae1c74143c6fb0900092a0b7f2a315950eaa1af86"
     },
     {
       "path": "packages/cli/src/agent/workbench-goal-dispatch.ts",
-      "bytes": 10117,
-      "sha256": "df5c56e04d1cdf245da236ada8160248b0c76b388c65e837f40fea52d933df32"
+      "bytes": 11383,
+      "sha256": "0ff44c99943798dc48cba61d4abfd839ef6cc6c5bdb78eab6fd2f7e1c4516d33"
     },
     {
       "path": "packages/cli/src/agent/workbench-maintenance-scheduler.ts",
@@ -1599,13 +1609,13 @@
     },
     {
       "path": "packages/cli/src/agent/workbench-packet-worker.ts",
-      "bytes": 13452,
-      "sha256": "73b37761d0d275b3f9008e893608632569d4255f55220167705aecd9f32af724"
+      "bytes": 13720,
+      "sha256": "1d11891afc976d07897e72380185038250ce753b7d7825d5a95777c60bc7b1de"
     },
     {
       "path": "packages/cli/src/agent/workbench-packets.ts",
-      "bytes": 20737,
-      "sha256": "70aade50e515f09d9743bb58036cc1b0acda9505a88630acd88224f93f020287"
+      "bytes": 20742,
+      "sha256": "bc7128e322b62867a400f2f9a19ddb9c48c575d52c3ff724c55bb9781ff9460d"
     },
     {
       "path": "packages/cli/src/agent/workbench-read-result-recovery.ts",
@@ -1641,6 +1651,11 @@
       "path": "packages/cli/src/agent/workbench-run-session.ts",
       "bytes": 3140,
       "sha256": "8f1c3713feddbc23daca4d4019de2c8b2d6ca58fa5749fc9919677b29b824c02"
+    },
+    {
+      "path": "packages/cli/src/agent/workbench-session-admission-diagnostics.ts",
+      "bytes": 3801,
+      "sha256": "b95120fb1bc08710e2937e637149013b45264040ecbf75651f41588d4f23a420"
     },
     {
       "path": "packages/cli/src/agent/workbench-session-store.ts",
@@ -1800,7 +1815,7 @@
     {
       "path": "packages/mcp/package.json",
       "bytes": 11214,
-      "sha256": "282448012dc4089e2bdf197aae88653e55522dbc6845b918a4a27de6abf53bed"
+      "sha256": "b53f4d6c25f8762aaca96c5c3eef904eb8f942a710450d195e32464bf5bd4f1e"
     },
     {
       "path": "packages/mcp/src/adapter-contract.ts",

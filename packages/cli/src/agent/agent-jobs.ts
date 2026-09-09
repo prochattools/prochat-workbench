@@ -27,6 +27,7 @@ import {
 import { normalizeCompiledRunPlan, type CompiledRunPlan } from './roadmap-to-run-plan'
 import { buildResumeProjection, isResumeProjectionFresh, type ResumeProjection } from './resume-projection'
 import { buildHandoffProjection, classifyHandoffTransition, type HandoffProjection } from './handoff-projection'
+import { normalizeFollowUpContext, type WorkbenchContinuationContext } from './workbench-follow-up-context'
 
 export const WORKBENCH_RUN_SCHEMA_VERSION = 1 as const
 const COMPLETED_RUN_PROJECTION_RETENTION_MS = 10 * 60 * 1000
@@ -34,6 +35,12 @@ const COMPLETED_RUN_PROJECTION_RETENTION_MS = 10 * 60 * 1000
 export type AgentJobStatus = 'queued' | 'running' | 'paused' | 'cancelled' | 'needs_confirmation' | 'blocked' | 'completed' | 'failed'
 export type AgentJobMode = 'repo_agent'
 export type AgentAutonomyLevel = 'supervised' | 'hands_off_safe'
+
+export type WorkbenchGoalContext = {
+  scope: string[]
+  knownFiles: string[]
+  continuation?: WorkbenchContinuationContext
+}
 
 export type WorkbenchRunResumeState = {
   nextTaskId?: string
@@ -100,6 +107,7 @@ export type AgentJob = {
   sourceId: string
   originRequestId?: string
   goal: string
+  goalContext?: WorkbenchGoalContext
   mode: AgentJobMode
   planVersion: number
   startingCommit?: string
@@ -432,6 +440,11 @@ function coerceJob(raw: unknown): AgentJob | null {
   const roadmapPhases = normalizeRoadmapPhases(item.roadmapPhases, String(item.goal))
   const status = item.status || 'running'
   const continuationCleared = clearsContinuationState(status)
+  const rawGoalContext = item.goalContext && typeof item.goalContext === 'object' ? item.goalContext as Record<string, unknown> : undefined
+  const normalizedContinuation = rawGoalContext?.continuation
+    ? normalizeFollowUpContext(rawGoalContext.continuation, String(item.sourceId))
+    : undefined
+  const continuation = normalizedContinuation?.ok === true ? normalizedContinuation.context : undefined
   const activeTaskId = continuationCleared ? undefined : findActiveTaskId(roadmapPhases, item.activeTaskId)
   const completedTaskCount = countCompletedTasks(roadmapPhases)
   return {
@@ -440,6 +453,13 @@ function coerceJob(raw: unknown): AgentJob | null {
     sourceId: String(item.sourceId),
     originRequestId: typeof item.originRequestId === 'string' ? item.originRequestId : undefined,
     goal: String(item.goal),
+    goalContext: item.goalContext && typeof item.goalContext === 'object'
+      ? {
+          scope: Array.isArray(item.goalContext.scope) ? item.goalContext.scope.filter(value => typeof value === 'string').slice(0, 20) : [],
+          knownFiles: Array.isArray(item.goalContext.knownFiles) ? item.goalContext.knownFiles.filter(value => typeof value === 'string').slice(0, 20) : [],
+          ...(continuation ? { continuation } : {})
+        }
+      : undefined,
     mode: 'repo_agent',
     planVersion: Math.max(1, Number(item.planVersion || 1)),
     startingCommit: typeof item.startingCommit === 'string' ? item.startingCommit : undefined,
@@ -577,7 +597,7 @@ function buildResumeInstructions(documentationPath: string): string[] {
   ]
 }
 
-function buildFallbackPrompt(job: Pick<AgentJob, 'sourceId' | 'goal' | 'documentationPath' | 'handoffPath' | 'summary' | 'blockedReason' | 'confirmationReason' | 'lastKnownGitStatus' | 'roadmapPhases' | 'activeTaskId' | 'completedTaskCount'>): string {
+function buildFallbackPrompt(job: Pick<AgentJob, 'sourceId' | 'goal' | 'goalContext' | 'documentationPath' | 'handoffPath' | 'summary' | 'blockedReason' | 'confirmationReason' | 'lastKnownGitStatus' | 'roadmapPhases' | 'activeTaskId' | 'completedTaskCount'>): string {
   const activeTask = describeActiveTask(job.roadmapPhases, job.activeTaskId) || 'none'
   const totalTasks = job.roadmapPhases.flatMap(phase => phase.tasks).length
   return [
@@ -585,6 +605,13 @@ function buildFallbackPrompt(job: Pick<AgentJob, 'sourceId' | 'goal' | 'document
     '',
     `Source ID: ${job.sourceId}`,
     `Goal: ${job.goal}`,
+    job.goalContext?.knownFiles?.length ? `Explicit repository context (read first, still subject to normal policy): ${job.goalContext.knownFiles.join(', ')}` : undefined,
+    job.goalContext?.scope?.length ? `Bounded repository scope: ${job.goalContext.scope.join(', ')}` : undefined,
+    job.goalContext?.continuation ? `Previous result summary (context only; this is a new authorized run): ${job.goalContext.continuation.summary}` : undefined,
+    job.goalContext?.continuation?.previousGoal ? `Previous goal for continuity: ${job.goalContext.continuation.previousGoal}` : undefined,
+    job.goalContext?.continuation?.changedFiles?.length ? `Files changed by the previous result (inspect current state before editing): ${job.goalContext.continuation.changedFiles.join(', ')}` : undefined,
+    job.goalContext?.continuation?.validation?.length ? `Previous validation evidence: ${job.goalContext.continuation.validation.map(item => `${item.commandKind} ${item.status}`).join(', ')}` : undefined,
+    job.goalContext?.continuation?.taskHistory?.length ? `Relevant previous task history: ${job.goalContext.continuation.taskHistory.join(' | ')}` : undefined,
     `Handoff path: ${job.handoffPath || job.documentationPath}`,
     `Current summary: ${job.summary || 'No summary recorded.'}`,
     `Roadmap progress: ${job.completedTaskCount}/${totalTasks} tasks completed.`,
@@ -608,7 +635,7 @@ function buildFallbackPrompt(job: Pick<AgentJob, 'sourceId' | 'goal' | 'document
 
 loadJobsFromDisk()
 
-export function startAgentJob(params: { sourceId: string; goal: string; requestId?: string; maxIterations?: number; autonomyLevel?: AgentAutonomyLevel; documentationPath?: string; reviewEveryStep?: boolean; autoCommit?: boolean; autoPush?: boolean; executionBudget?: RunExecutionBudgetLimits }): AgentJob {
+export function startAgentJob(params: { sourceId: string; goal: string; goalContext?: WorkbenchGoalContext; requestId?: string; maxIterations?: number; autonomyLevel?: AgentAutonomyLevel; documentationPath?: string; reviewEveryStep?: boolean; autoCommit?: boolean; autoPush?: boolean; executionBudget?: RunExecutionBudgetLimits }): AgentJob {
   const sourceId = String(params.sourceId || '').trim()
   if (!sourceId) throw new Error('sourceId is required')
   const goal = sanitizeGoal(params.goal)
@@ -625,6 +652,7 @@ export function startAgentJob(params: { sourceId: string; goal: string; requestI
     sourceId,
     originRequestId: params.requestId,
     goal,
+    goalContext: params.goalContext,
     mode: 'repo_agent',
     planVersion: 1,
     startingCommit: undefined,

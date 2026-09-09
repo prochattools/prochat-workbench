@@ -16,7 +16,7 @@ import { getResolvedActiveSources, isAllowedArtifactRoot, isAllowedSafeWriteRoot
 import { resolveResumeNavigation, type Workspace } from '@workbench/shared'
 import { buildArtifactFilename, normalizeArtifactSlug, verifyWrittenFile } from './write-verification'
 import { getAllowedCommandKinds, runSafeCommand, type SafeCommandKind } from './command-runner'
-import { compactAgentJob, controlAgentJob, createWorkbenchRun, getActiveWorkbenchRun, getAgentJob, listActiveWorkbenchRuns, listAgentJobs, resumeWorkbenchRun, startAgentJob, updateAgentJob, type AgentJobControlAction } from './agent-jobs'
+import { compactAgentJob, controlAgentJob, createWorkbenchRun, getActiveWorkbenchRun, getAgentJob, listActiveWorkbenchRuns, listAgentJobs, resumeWorkbenchRun, startAgentJob, updateAgentJob, type AgentJobControlAction, type WorkbenchGoalContext } from './agent-jobs'
 import { getFocusedWorkspace, setFocusedWorkspace } from './focused-workspace'
 import { listAgentEvents, listWorkbenchActivity, appendAgentEvent } from './agent-events'
 import { startLocalAgentPreflight } from './agent-runtime'
@@ -35,7 +35,7 @@ import { getWorkbenchPacketResult } from './workbench-packet-results'
 import { drainQueuedWorkbenchPackets, scheduleWorkbenchPacket } from './workbench-packet-coordinator'
 import { claimNextWorkbenchPacket, compactWorkbenchPacketLeaseRecord, controlWorkbenchPacketsForRun, getWorkbenchPacketRecord, listWorkbenchPacketRecords, recoverInterruptedWorkbenchPacket, recoverStaleWorkbenchPacketLeases, releaseWorkbenchPacketLease, renewWorkbenchPacketLease, reserveWorkbenchPacket } from './workbench-packet-store'
 import { dispatchWorkbenchGoal, getWorkbenchGoalTerminalResult, type WorkbenchGoalDispatchInput } from './workbench-goal-dispatch'
-import { compileNativeGoal } from './native-goal-compiler'
+import { compileNativeGoal, validateNativeGoalPaths } from './native-goal-compiler'
 import { projectCodexProviderStatus } from './codex-provider-status'
 import { getBuildSha, getBuildTimestamp } from '@workbench/shared'
 import { initializeCapabilityRuntime, scheduleCapabilityRuntimeMaintenance } from '../../../mcp/dist/capability-runtime-bootstrap.js'
@@ -48,6 +48,7 @@ import { WorkbenchMaintenanceScheduler } from './workbench-maintenance-scheduler
 import { pruneWorkbenchEvidence } from './workbench-evidence-store'
 import { pruneWorkbenchReadResultRecovery } from './workbench-read-result-recovery'
 import { pruneWorkbenchSessions } from './workbench-session-store'
+import { continuationHintPaths, mergeFollowUpPaths, normalizeFollowUpContext, type WorkbenchContinuationContext } from './workbench-follow-up-context'
 
 let cliVersion = process.env.WORKBENCH_PACKAGE_VERSION || 'unknown'
 try {
@@ -969,21 +970,47 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
     })
   })
 
-  fastify.post<{ Body: { sourceId: string; goal: string; documentationPath?: string; maxIterations?: number; autoCommit?: boolean; nativeDirectGoal?: boolean; nativeGoalPaths?: string[]; confirmedByUser?: boolean; executionMode?: 'auto' | 'direct' | 'codex'; goalDispatch?: WorkbenchGoalDispatchInput } }>('/api/workbench-runs/create', async (request, reply) => {
+  fastify.post<{ Body: { sourceId: string; goal: string; documentationPath?: string; maxIterations?: number; autoCommit?: boolean; nativeDirectGoal?: boolean; nativeGoalPaths?: string[]; confirmedByUser?: boolean; executionMode?: 'auto' | 'direct' | 'codex'; goalDispatch?: WorkbenchGoalDispatchInput; followUpContext?: unknown } }>('/api/workbench-runs/create', async (request, reply) => {
     try {
-      const { sourceId, goal, documentationPath, maxIterations, autoCommit, nativeDirectGoal, nativeGoalPaths } = request.body || {}
+      const { sourceId, goal, documentationPath, maxIterations, autoCommit, nativeDirectGoal, nativeGoalPaths, followUpContext: rawFollowUpContext } = request.body || {}
       const executionMode = request.body?.executionMode === 'codex' || request.body?.executionMode === 'direct' || request.body?.executionMode === 'auto'
         ? request.body.executionMode
         : nativeDirectGoal === true ? 'direct' : 'auto'
       const source = getSourcesSafe().find(item => item.id === sourceId && item.enabled && isSourcePathAvailable(item.path))
       if (!source) return reply.code(404).send({ error: `Source not found or disabled: ${sourceId}` })
+      let continuation: WorkbenchContinuationContext | undefined
+      if (rawFollowUpContext !== undefined && rawFollowUpContext !== null) {
+        const normalized = normalizeFollowUpContext(rawFollowUpContext, sourceId)
+        if (normalized.ok === false) return reply.code(409).header('Cache-Control', 'no-store').send({ status: 'blocked', verified: false, executionMode, error: { code: normalized.code, message: normalized.message } })
+        continuation = normalized.context
+      }
+      let validatedNativeGoalPaths: string[] = []
+      try {
+        validatedNativeGoalPaths = validateNativeGoalPaths(source.path, mergeFollowUpPaths(continuation, nativeGoalPaths))
+      } catch (error) {
+        return reply.code(409).header('Cache-Control', 'no-store').send({
+          status: 'blocked',
+          verified: false,
+          executionMode,
+          error: { code: 'NATIVE_GOAL_PATH_BLOCKED', message: error instanceof Error ? error.message : 'Attached repository context could not be validated.' }
+        })
+      }
+      const continuationPaths = continuationHintPaths(continuation).flatMap(candidate => {
+        try { return validateNativeGoalPaths(source.path, [candidate]) } catch { return [] }
+      })
+      const effectiveGoalPaths = Array.from(new Set([...validatedNativeGoalPaths, ...continuationPaths])).slice(0, 20)
+      const knownContextPaths = Array.from(new Set([...effectiveGoalPaths, ...continuationHintPaths(continuation)])).slice(0, 20)
+      const goalContext: WorkbenchGoalContext | undefined = effectiveGoalPaths.length > 0
+        || continuation
+        ? { scope: effectiveGoalPaths, knownFiles: knownContextPaths, ...(continuation ? { continuation } : {}) }
+        : undefined
       if (executionMode !== 'codex' || nativeDirectGoal === true) {
         const compilation = await compileNativeGoal({
           goal,
           sourceId,
           sourceRoot: source.path,
           searcher,
-          paths: Array.isArray(nativeGoalPaths) ? nativeGoalPaths : undefined,
+          paths: effectiveGoalPaths,
           confirmedByUser: request.body?.confirmedByUser === true,
           autoCommit: autoCommit === true
         })
@@ -1003,14 +1030,15 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
             requestId: requestIdFrom(request, request.body),
             documentationPath,
             maxIterations,
-            dispatch: compilation.dispatch
+            dispatch: compilation.dispatch,
+            goalContext
           })
           return reply.code(result.status === 'blocked' ? 409 : 202).header('Cache-Control', 'no-store').send({
             ...result,
             executionMode, providerStatus: projectCodexProviderStatus({ directCapability: true }), nativeGoal: { intent: compilation.intent, route: compilation.route, reviewMessage: compilation.reviewMessage, compilerMs: compilation.compilerMs }
           })
         }
-        const roadmap = createWorkbenchRun({ sourceId, goal, documentationPath, maxIterations, autoCommit, autoPush: false, autonomyLevel: 'hands_off_safe' })
+        const roadmap = createWorkbenchRun({ sourceId, goal, goalContext, documentationPath, maxIterations, autoCommit, autoPush: false, autonomyLevel: 'hands_off_safe' })
         return reply.header('Cache-Control', 'no-store').send({
           status: 'ok',
           created: roadmap.created,
@@ -1029,11 +1057,12 @@ export async function startLocalServer(port: number = 3052): Promise<void> {
           requestId: requestIdFrom(request, request.body),
           documentationPath,
           maxIterations,
-          dispatch: request.body.goalDispatch
+          dispatch: request.body.goalDispatch,
+          goalContext
         })
         return reply.code(result.status === 'blocked' ? 409 : 202).header('Cache-Control', 'no-store').send(result)
       }
-      const result = createWorkbenchRun({ sourceId, goal, documentationPath, maxIterations, autoCommit, autoPush: false, autonomyLevel: 'hands_off_safe' })
+      const result = createWorkbenchRun({ sourceId, goal, goalContext, documentationPath, maxIterations, autoCommit, autoPush: false, autonomyLevel: 'hands_off_safe' })
       return reply.header('Cache-Control', 'no-store').send({
         status: 'ok',
         created: result.created,

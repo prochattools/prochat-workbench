@@ -109,7 +109,7 @@ function normalizeGoalPath(value: string): string {
   const raw = String(value || '').replace(/\\/g, '/')
   if (raw.startsWith('/') || /^[A-Za-z]:\//.test(raw)) return ''
   const normalized = normalizeRepoRelativePath(raw).replace(/\/+$/, '')
-  if (!normalized || normalized === '.' || normalized.split('/').includes('..')) return ''
+  if (!normalized || normalized.split('/').includes('..')) return ''
   return normalized
 }
 
@@ -123,7 +123,7 @@ export function isGoalPathWithinScope(scopePaths: readonly string[], targetPath:
   if (!normalizedTarget) return false
   return scopePaths.some(scopePath => {
     const normalizedScope = normalizeGoalPath(scopePath)
-    return Boolean(normalizedScope && (normalizedTarget === normalizedScope || normalizedTarget.startsWith(`${normalizedScope}/`)))
+    return normalizedScope === '.' || Boolean(normalizedScope && (normalizedTarget === normalizedScope || normalizedTarget.startsWith(`${normalizedScope}/`)))
   })
 }
 

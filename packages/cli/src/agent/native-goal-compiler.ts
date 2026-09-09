@@ -3,6 +3,7 @@ import path from 'node:path'
 import type { VaultSearcher } from './search'
 import { prepareTaskContext, type PreparedContext } from './prepare-task-context'
 import type { WorkbenchGoalDispatchInput } from './workbench-goal-dispatch'
+import { isPathWithinRootAfterSymlinks, isSafeRelativePath } from './safe-access'
 
 export type NativeGoalIntent = 'read_only' | 'implementation' | 'commit' | 'push' | 'high_impact'
 
@@ -23,7 +24,7 @@ export type NativeExactReplacement = {
 
 const MAX_GOAL_BYTES = 4_000
 const MAX_READS = 5
-const MAX_SCOPE_PATHS = 5
+const MAX_SCOPE_PATHS = 20
 const FALLBACK_FILES = ['README.md', 'package.json', 'Package.swift', 'pyproject.toml', 'Cargo.toml']
 const STOP_WORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'by', 'explain', 'find', 'for', 'from',
@@ -61,6 +62,51 @@ function safeRelative(value: string): string {
   const normalized = value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+/g, '/').replace(/\/$/, '')
   if (!normalized || normalized.startsWith('/') || normalized.split('/').includes('..')) return ''
   return normalized
+}
+
+type ResolvedNativeGoalPath = {
+  path: string
+  isDirectory: boolean
+  readable: boolean
+}
+
+const TEXT_EXTENSIONS = new Set(['c', 'cc', 'cpp', 'css', 'csv', 'go', 'h', 'hpp', 'html', 'ini', 'java', 'js', 'json', 'jsx', 'md', 'mjs', 'plist', 'py', 'rb', 'rs', 'sh', 'sql', 'swift', 'toml', 'ts', 'tsx', 'txt', 'yaml', 'yml', 'zsh'])
+
+function isLikelyTextPath(relativePath: string): boolean {
+  const lower = relativePath.toLowerCase()
+  return Array.from(TEXT_EXTENSIONS).some(extension => lower.endsWith(`.${extension}`))
+}
+
+function resolveNativeGoalPaths(sourceRoot: string, values?: string[]): ResolvedNativeGoalPath[] {
+  if (!Array.isArray(values) || values.length === 0) return []
+  if (values.length > 20) throw new Error('Workbench accepts at most 20 attached paths; attach a bounded folder instead.')
+  const resolved: ResolvedNativeGoalPath[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    if (typeof value !== 'string') throw new Error('Attached repository paths must be strings.')
+    const relative = safeRelative(value)
+    if (!relative || !isSafeRelativePath(relative)) throw new Error(`Attached path is not repository-relative: ${value}`)
+    if (seen.has(relative)) continue
+    seen.add(relative)
+    const fullPath = path.resolve(sourceRoot, relative === '.' ? '' : relative)
+    if (!isPathWithinRootAfterSymlinks(sourceRoot, fullPath)) {
+      throw new Error(`Attached path resolves outside the selected repository: ${relative}`)
+    }
+    let stat: fs.Stats
+    try {
+      stat = fs.statSync(fullPath)
+    } catch {
+      throw new Error(`Attached path is no longer available: ${relative}`)
+    }
+    const isDirectory = stat.isDirectory()
+    const readable = !isDirectory && stat.size <= 100 * 1024 && isLikelyTextPath(relative)
+    resolved.push({ path: relative, isDirectory, readable })
+  }
+  return resolved
+}
+
+export function validateNativeGoalPaths(sourceRoot: string, values?: string[]): string[] {
+  return resolveNativeGoalPaths(sourceRoot, values).map(item => item.path)
 }
 
 /**
@@ -128,9 +174,25 @@ export async function compileNativeGoal(params: {
   const startedAt = Date.now()
   const goal = normalizeGoal(params.goal)
   const intent = classifyNativeGoal(goal)
+  let attachedPaths: ResolvedNativeGoalPath[]
+  try {
+    attachedPaths = resolveNativeGoalPaths(params.sourceRoot, params.paths)
+  } catch (error) {
+    return {
+      intent,
+      route: 'blocked',
+      reviewMessage: error instanceof Error ? error.message : 'The attached repository path could not be validated.',
+      compilerMs: Date.now() - startedAt
+    }
+  }
+  const explicitPaths = attachedPaths.map(item => item.path)
+  const attachedReadableFiles = attachedPaths.filter(item => item.readable).map(item => item.path)
   const exactReplacement = parseNativeExactReplacement(goal)
   if (exactReplacement && (intent === 'implementation' || (intent === 'commit' && params.autoCommit === true))) {
     const fullPath = path.join(params.sourceRoot, exactReplacement.path)
+    if (!isPathWithinRootAfterSymlinks(params.sourceRoot, fullPath)) {
+      return { intent, route: 'blocked', reviewMessage: `The exact Direct edit target resolves outside the selected repository: ${exactReplacement.path}`, compilerMs: Date.now() - startedAt }
+    }
     let original: string
     try {
       const stat = fs.statSync(fullPath)
@@ -162,8 +224,8 @@ export async function compileNativeGoal(params: {
     const dispatch: WorkbenchGoalDispatchInput = {
       version: 1,
       expectedOutcome: `Apply one exact replacement in ${exactReplacement.path}, validate the resulting diff${commitRequested ? ', and create the exact scoped commit' : ', and stop without commit or push'}.`,
-      scope: [exactReplacement.path],
-      knownFiles: [exactReplacement.path],
+      scope: Array.from(new Set([exactReplacement.path, ...explicitPaths])).slice(0, MAX_SCOPE_PATHS),
+      knownFiles: Array.from(new Set([exactReplacement.path, ...explicitPaths])).slice(0, MAX_SCOPE_PATHS),
       constraints: [
         'Read the exact target before mutation and require one exact match.',
         'Write only the selected repository-relative path.',
@@ -202,13 +264,15 @@ export async function compileNativeGoal(params: {
     query: goal,
     sourceIds: [params.sourceId],
     searcher: params.searcher,
-    paths: params.paths,
+    paths: attachedReadableFiles,
+    skipSearch: explicitPaths.length > 0,
     limit: 5,
     maxBytesPerFile: 1_200
   })
+  const inferredPaths = explicitPaths.length > 0 ? [] : candidatePaths(params.sourceRoot, prepared)
   const paths = Array.from(new Set([
-    ...(params.paths || []).map(safeRelative),
-    ...candidatePaths(params.sourceRoot, prepared)
+    ...explicitPaths,
+    ...inferredPaths
   ].filter(Boolean))).slice(0, MAX_SCOPE_PATHS)
   if (paths.length === 0) {
     return {
@@ -222,18 +286,24 @@ export async function compileNativeGoal(params: {
 
   const dispatch: WorkbenchGoalDispatchInput = {
     version: 1,
-    expectedOutcome: `Investigate ${goal} with bounded local reads and return a concise natural-language result.`,
+    expectedOutcome: explicitPaths.length > 0
+      ? `Investigate ${goal} using the explicitly attached repository context and return a concise natural-language result.`
+      : `Investigate ${goal} with bounded local reads and return a concise natural-language result.`,
     scope: paths,
     knownFiles: paths,
     constraints: [
       'Read only the selected source and the bounded paths identified by Workbench.',
+      ...(explicitPaths.length > 0 ? ['Treat attached files as high-confidence context; treat attached folders as bounded scope hints, not bulk ingestion.'] : []),
       'Do not modify files, commit, push, publish, deploy, or broaden the source scope.'
     ],
     nonGoals: ['mutation', 'commit', 'push', 'deployment'],
     stopConditions: ['A bounded path cannot be established.', 'The selected source changes before execution.', 'A protected path or unavailable source is encountered.'],
     confirmationPolicy: 'none',
     terminalResult: { style: 'natural_language', include: ['summary', 'changed_files', 'validation', 'warnings', 'blocker'] },
-    reads: readPlan(paths),
+    reads: readPlan(Array.from(new Set([...attachedReadableFiles, ...paths])).filter(item => {
+      const attached = attachedPaths.find(candidate => candidate.path === item)
+      return !attached || attached.readable
+    }).filter(item => !attachedPaths.some(attached => attached.path === item && attached.isDirectory))),
     commands: commandPlan(goal, paths),
     readOnly: true,
     steps: [],

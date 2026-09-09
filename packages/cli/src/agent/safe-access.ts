@@ -750,7 +750,7 @@ function isPathWithinRoot(root: string, candidate: string): boolean {
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
 }
 
-function isPathWithinRootAfterSymlinks(root: string, candidate: string): boolean {
+export function isPathWithinRootAfterSymlinks(root: string, candidate: string): boolean {
   try {
     const rootReal = fs.realpathSync(path.resolve(root))
     let probe = path.resolve(candidate)

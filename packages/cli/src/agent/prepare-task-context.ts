@@ -1,5 +1,5 @@
 import { SearchResult } from '@workbench/shared'
-import { VaultSearcher } from './search'
+import { BoundedSearchResult, VaultSearcher } from './search'
 import { readFile } from './vault'
 import { redactSecrets, truncateContent } from './safe-access'
 import { GPT_ACTION_DEFAULT_FILE_BYTES } from './payload-budget'
@@ -368,6 +368,7 @@ export async function prepareTaskContext(params: {
   searcher: VaultSearcher
   limit?: number
   paths?: string[]
+  skipSearch?: boolean
   maxBytesPerFile?: number
   knowledgeContext?: KnowledgeContextPreparation
   structuralContext?: StructuralContextPreparation
@@ -404,18 +405,23 @@ export async function prepareTaskContext(params: {
   }
 
   const searchStartedAt = Date.now()
-  const pathSearch = params.searcher.searchBounded(query, limit, sourceIds, {
-    startedAt: searchStartedAt,
-    deadlineMs: 900,
-    maxDocsPerSource: 1200,
-    maxContentDocsPerSource: 250
-  })
-  const contentSearch = params.searcher.searchBounded(`content:${query}`, limit, sourceIds, {
-    startedAt: searchStartedAt,
-    deadlineMs: 1200,
-    maxDocsPerSource: 1200,
-    maxContentDocsPerSource: 250
-  })
+  const emptySearchResult: Pick<BoundedSearchResult, 'results' | 'sourceWarnings' | 'partial'> = { results: [], sourceWarnings: [], partial: false }
+  const pathSearch = params.skipSearch
+    ? emptySearchResult
+    : params.searcher.searchBounded(query, limit, sourceIds, {
+      startedAt: searchStartedAt,
+      deadlineMs: 900,
+      maxDocsPerSource: 1200,
+      maxContentDocsPerSource: 250
+    })
+  const contentSearch = params.skipSearch
+    ? emptySearchResult
+    : params.searcher.searchBounded(`content:${query}`, limit, sourceIds, {
+      startedAt: searchStartedAt,
+      deadlineMs: 1200,
+      maxDocsPerSource: 1200,
+      maxContentDocsPerSource: 250
+    })
   const searchNotes = [...pathSearch.sourceWarnings, ...contentSearch.sourceWarnings]
     .map(warning => warning.message)
   const searchMs = Date.now() - searchStartedAt

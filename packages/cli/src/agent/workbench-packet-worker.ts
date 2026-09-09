@@ -55,7 +55,8 @@ function recordWorkbenchPacketResult(
   // of the default multi-phase roadmap. Close that run after its packet has
   // been durably persisted so the coordinator cannot schedule another Action
   // round for internal roadmap work.
-  if (result.status === 'completed' && packetRecord?.packet.goalDispatch && run.status === 'running') {
+  const isBoundedGoalDispatch = Boolean(packetRecord?.packet.goalDispatch)
+  if (result.status === 'completed' && isBoundedGoalDispatch && run.status === 'running') {
     run = updateAgentJob(run.id, {
       status: 'completed',
       activeTaskId: undefined,
@@ -125,23 +126,26 @@ function recordWorkbenchPacketResult(
       ]
     : undefined
 
-  updateAgentJob(run.id, {
-    resumeState: {
-      ...run.resumeState,
-      nextTaskId: nextTaskId || run.resumeState.nextTaskId,
-      nextFiles: exhaustedInstructions && failedPacketRecord
-        ? failedPacketRecord.exactPaths
-        : run.resumeState.nextFiles,
-      instructions: exhaustedInstructions || [evidenceInstruction, ...run.resumeState.instructions].slice(0, 4)
-    },
-    metrics: repairState
-      ? {
-          ...run.metrics,
-          repairAttempts: Math.max(run.metrics.repairAttempts, repairState.attemptCount)
-        }
-      : run.metrics,
-    summary: reason
-  })
+  const preserveHumanCompletionSummary = isBoundedGoalDispatch && result.status === 'completed' && run.status === 'completed'
+  if (!preserveHumanCompletionSummary) {
+    updateAgentJob(run.id, {
+      resumeState: {
+        ...run.resumeState,
+        nextTaskId: nextTaskId || run.resumeState.nextTaskId,
+        nextFiles: exhaustedInstructions && failedPacketRecord
+          ? failedPacketRecord.exactPaths
+          : run.resumeState.nextFiles,
+        instructions: exhaustedInstructions || [evidenceInstruction, ...run.resumeState.instructions].slice(0, 4)
+      },
+      metrics: repairState
+        ? {
+            ...run.metrics,
+            repairAttempts: Math.max(run.metrics.repairAttempts, repairState.attemptCount)
+          }
+        : run.metrics,
+      summary: reason
+    })
+  }
 
   recordWorkbenchContinuationDecision({
     runId: result.runId,

@@ -9,7 +9,7 @@ import { classifyParsedRunCommandRequest, parseRunCommandRouteRequest, toSafeCom
 import { executeWithWorkbenchAdmission, type WorkbenchAdmissionOptions } from './workbench-admission-orchestrator'
 import { cancelWorkbenchValidationJob, compactWorkbenchValidationJobForPublic, getWorkbenchValidationJob, getWorkbenchValidationJobResultPage, scheduleWorkbenchValidationJob, submitWorkbenchValidationJob } from './workbench-validation-jobs'
 import { runControlledWorkflowMigrationCommand, type MigrationCommandAdapterDependencies } from './n8n-workflow-migration-command-adapter'
-import { createWorkbenchRun, ensureWorkbenchActionRun, getActiveWorkbenchRun, getAgentJob, resumeWorkbenchRun, updateAgentJob } from './agent-jobs'
+import { createWorkbenchRun, ensureWorkbenchActionRun, getActiveWorkbenchRun, getAgentJob, resumeWorkbenchRun, updateAgentJob, type WorkbenchGoalContext } from './agent-jobs'
 import { dispatchWorkbenchGoal, getWorkbenchGoalTerminalResult, type WorkbenchGoalDispatchInput } from './workbench-goal-dispatch'
 import { appendAgentEvent, findOpenApprovalActivity } from './agent-events'
 import { getWorkbenchSession, type WorkbenchSessionStoreOptions } from './workbench-session-store'
@@ -18,7 +18,7 @@ import { closeWorkbenchRun } from './workbench-run-close'
 import { projectPortableActiveRunActivity } from './portable-read-handlers'
 import { Indexer } from './indexer'
 import { VaultSearcher } from './search'
-import { compileNativeGoal } from './native-goal-compiler'
+import { compileNativeGoal, validateNativeGoalPaths } from './native-goal-compiler'
 import { projectCodexProviderStatus } from './codex-provider-status'
 import { preflightWorkbenchPacket, type WorkbenchPacket } from './workbench-packets'
 import { reserveWorkbenchPacket, claimNextWorkbenchPacket, compactWorkbenchPacketLeaseRecord } from './workbench-packet-store'
@@ -31,6 +31,7 @@ import type { PortableOperationHandlers, PortableExecutionContext } from '../../
 import { PortableOperationError } from './portable-operation-errors'
 import { authorizeContextOperation } from './context-broker'
 import { workbenchSessionIdForRun } from './workbench-run-session'
+import { continuationHintPaths, mergeFollowUpPaths, normalizeFollowUpContext, type WorkbenchContinuationContext } from './workbench-follow-up-context'
 
 type Payload = Record<string, unknown>
 type RouteResult = { statusCode: number; body: Record<string, unknown> }
@@ -1046,6 +1047,40 @@ async function apply(body: Payload, context: PortableExecutionContext): Promise<
     const executionMode = body.executionMode === 'codex' || body.executionMode === 'direct' || body.executionMode === 'auto'
       ? body.executionMode
       : body.nativeDirectGoal === true ? 'direct' : 'auto'
+    let validatedNativeGoalPaths: string[] = []
+    let continuation: WorkbenchContinuationContext | undefined
+    if (body.followUpContext !== undefined && body.followUpContext !== null) {
+      const normalized = normalizeFollowUpContext(body.followUpContext, sourceId)
+      if (normalized.ok === false) {
+        return {
+          statusCode: 409,
+          body: { status: 'blocked', verified: false, executionMode, error: { code: normalized.code, message: normalized.message } }
+        }
+      }
+      continuation = normalized.context
+    }
+    try {
+      validatedNativeGoalPaths = validateNativeGoalPaths(source.path, mergeFollowUpPaths(continuation, Array.isArray(body.nativeGoalPaths) ? body.nativeGoalPaths.filter((item): item is string => typeof item === 'string') : undefined))
+    } catch (error) {
+      return {
+        statusCode: 409,
+        body: {
+          status: 'blocked',
+          verified: false,
+          executionMode,
+          error: { code: 'NATIVE_GOAL_PATH_BLOCKED', message: error instanceof Error ? error.message : 'Attached repository context could not be validated.' }
+        }
+      }
+    }
+    const continuationPaths = continuationHintPaths(continuation).flatMap(candidate => {
+      try { return validateNativeGoalPaths(source.path, [candidate]) } catch { return [] }
+    })
+    const effectiveGoalPaths = Array.from(new Set([...validatedNativeGoalPaths, ...continuationPaths])).slice(0, 20)
+    const knownContextPaths = Array.from(new Set([...effectiveGoalPaths, ...continuationHintPaths(continuation)])).slice(0, 20)
+    const goalContext: WorkbenchGoalContext | undefined = effectiveGoalPaths.length > 0
+      || continuation
+      ? { scope: effectiveGoalPaths, knownFiles: knownContextPaths, ...(continuation ? { continuation } : {}) }
+      : undefined
     if (body.goalDispatch && typeof body.goalDispatch === 'object' && !Array.isArray(body.goalDispatch)) {
       // An explicit bounded packet is already the caller's scope authority.
       // Honor it before AUTO's natural-language compiler so a read-only goal
@@ -1057,7 +1092,8 @@ async function apply(body: Payload, context: PortableExecutionContext): Promise<
         requestId: context.requestId,
         documentationPath: typeof body.documentationPath === 'string' ? body.documentationPath : undefined,
         maxIterations: typeof body.maxIterations === 'number' ? body.maxIterations : undefined,
-        dispatch: body.goalDispatch as WorkbenchGoalDispatchInput
+        dispatch: body.goalDispatch as WorkbenchGoalDispatchInput,
+        goalContext
       })
       return { statusCode: result.status === 'blocked' ? 409 : 202, body: { ...result, executionMode } }
     }
@@ -1067,7 +1103,7 @@ async function apply(body: Payload, context: PortableExecutionContext): Promise<
         sourceId,
         sourceRoot: source.path,
         searcher: new VaultSearcher(new Indexer([sourceId]).getDocs()),
-        paths: Array.isArray(body.nativeGoalPaths) ? body.nativeGoalPaths.filter((item): item is string => typeof item === 'string') : undefined,
+        paths: effectiveGoalPaths,
         confirmedByUser: body.confirmedByUser === true
       })
       if (compilation.route === 'blocked') {
@@ -1089,7 +1125,8 @@ async function apply(body: Payload, context: PortableExecutionContext): Promise<
           requestId: context.requestId,
           documentationPath: typeof body.documentationPath === 'string' ? body.documentationPath : undefined,
           maxIterations: typeof body.maxIterations === 'number' ? body.maxIterations : undefined,
-          dispatch: compilation.dispatch
+          dispatch: compilation.dispatch,
+          goalContext
         })
         return {
           statusCode: result.status === 'blocked' ? 409 : 202,
@@ -1106,7 +1143,8 @@ async function apply(body: Payload, context: PortableExecutionContext): Promise<
         maxIterations: typeof body.maxIterations === 'number' ? body.maxIterations : undefined,
         autoCommit: body.autoCommit === true,
         autoPush: false,
-        autonomyLevel: 'hands_off_safe'
+        autonomyLevel: 'hands_off_safe',
+        goalContext
       })
       return {
         statusCode: 200,
@@ -1121,7 +1159,7 @@ async function apply(body: Payload, context: PortableExecutionContext): Promise<
         }
       }
     }
-    const result = createWorkbenchRun({ sourceId, goal, documentationPath: typeof body.documentationPath === 'string' ? body.documentationPath : undefined, maxIterations: typeof body.maxIterations === 'number' ? body.maxIterations : undefined, autoCommit: body.autoCommit === true, autoPush: false, autonomyLevel: 'hands_off_safe' })
+    const result = createWorkbenchRun({ sourceId, goal, goalContext, documentationPath: typeof body.documentationPath === 'string' ? body.documentationPath : undefined, maxIterations: typeof body.maxIterations === 'number' ? body.maxIterations : undefined, autoCommit: body.autoCommit === true, autoPush: false, autonomyLevel: 'hands_off_safe' })
     return { statusCode: 200, body: { status: 'ok', created: result.created, verified: true, executionMode, providerStatus: projectCodexProviderStatus({ directCapability: true }), run: getActiveWorkbenchRun(sourceId) || result.run } }
   }
   if (changeType === 'resume_run') {

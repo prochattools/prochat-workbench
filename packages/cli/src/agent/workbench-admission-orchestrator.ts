@@ -20,6 +20,10 @@ import {
   type WorkbenchSessionStoreFailure,
   type WorkbenchSessionStoreOptions
 } from './workbench-session-store'
+import {
+  recordWorkbenchSessionAdmissionFailure,
+  type WorkbenchSessionAdmissionPredicate
+} from './workbench-session-admission-diagnostics'
 
 export type WorkbenchAdmissionOperation =
   | 'status'
@@ -106,6 +110,21 @@ function isRepositoryFailure<T extends { ok: boolean }>(value: T | RepositorySch
   return value.ok === false
 }
 
+function recordAdmissionFailure(input: {
+  requestId?: string
+  sessionId: string
+  sourceId: string
+  operation: WorkbenchAdmissionOperation
+  operationKind: string
+  code: string
+  predicate: WorkbenchSessionAdmissionPredicate
+}, options: WorkbenchAdmissionOptions): void {
+  recordWorkbenchSessionAdmissionFailure(input, {
+    rootDir: options.session?.rootDir,
+    now: options.session?.now
+  })
+}
+
 export function acquireWorkbenchAdmission(input: {
   requestId?: string
   sessionId: string
@@ -116,6 +135,14 @@ export function acquireWorkbenchAdmission(input: {
 }, options: WorkbenchAdmissionOptions = {}): WorkbenchAdmissionLeaseResult {
   const session = getWorkbenchSession(input.sessionId, options.session)
   if (!session || isSessionFailure(session) || session.status !== 'active') {
+    const predicate: WorkbenchSessionAdmissionPredicate = !session
+      ? 'session_not_found'
+      : isSessionFailure(session)
+        ? 'session_store_error'
+        : session.status === 'completed'
+          ? 'expired'
+          : 'inactive'
+    recordAdmissionFailure({ ...input, code: 'ADMISSION_INVALID_SESSION', predicate }, options)
     return {
       ok: false,
       code: 'ADMISSION_INVALID_SESSION',
@@ -124,6 +151,7 @@ export function acquireWorkbenchAdmission(input: {
     }
   }
   if (!session.lockedSourceIds.includes(input.sourceId)) {
+    recordAdmissionFailure({ ...input, code: 'ADMISSION_SOURCE_NOT_OWNED', predicate: 'source_mismatch' }, options)
     return { ok: false, code: 'ADMISSION_SOURCE_NOT_OWNED', message: 'The session does not own the selected source.' }
   }
 
@@ -139,6 +167,7 @@ export function acquireWorkbenchAdmission(input: {
     now: options.now
   }, options.budget)
   if (isBudgetFailure(budget)) {
+    recordAdmissionFailure({ ...input, code: 'ADMISSION_BUDGET_REJECTED', predicate: 'budget_rejected' }, options)
     return { ok: false, code: 'ADMISSION_BUDGET_REJECTED', message: budget.message, cause: budget }
   }
 
@@ -155,6 +184,7 @@ export function acquireWorkbenchAdmission(input: {
     }, options.repository)
     if (isRepositoryFailure(queued)) {
       releaseWorkbenchBudget({ leaseId: budget.lease.leaseId, leaseProof: budget.leaseProof, outcome: 'cancelled', now: options.now }, options.budget)
+      recordAdmissionFailure({ ...input, code: 'ADMISSION_REPOSITORY_REJECTED', predicate: 'repository_rejected' }, options)
       return { ok: false, code: 'ADMISSION_REPOSITORY_REJECTED', message: queued.message, cause: queued }
     }
     const claimed = claimRepositoryWork({
@@ -166,6 +196,7 @@ export function acquireWorkbenchAdmission(input: {
     if (isRepositoryFailure(claimed)) {
       cancelRepositoryWork({ requestId, now: options.now }, options.repository)
       releaseWorkbenchBudget({ leaseId: budget.lease.leaseId, leaseProof: budget.leaseProof, outcome: 'cancelled', now: options.now }, options.budget)
+      recordAdmissionFailure({ ...input, requestId, code: 'ADMISSION_REPOSITORY_REJECTED', predicate: 'repository_rejected' }, options)
       return { ok: false, code: 'ADMISSION_REPOSITORY_REJECTED', message: claimed.message, cause: claimed }
     }
     repositoryRequestId = requestId
@@ -250,10 +281,30 @@ export async function executeWithWorkbenchAdmission<T>(input: {
   try {
     const result = await input.execute()
     const released = releaseWorkbenchAdmission(acquired.lease, options, 'released')
-    if (released.ok === false) return released
+    if (released.ok === false) {
+      recordAdmissionFailure({
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        sourceId: input.sourceId,
+        operation: input.operation,
+        operationKind: input.operationKind,
+        code: released.code,
+        predicate: released.code === 'ADMISSION_REPOSITORY_REJECTED' ? 'repository_rejected' : 'budget_rejected'
+      }, options)
+      return released
+    }
     return { ok: true, result }
   } catch (error) {
     releaseWorkbenchAdmission(acquired.lease, options, 'cancelled')
+    recordAdmissionFailure({
+      requestId: input.requestId,
+      sessionId: input.sessionId,
+      sourceId: input.sourceId,
+      operation: input.operation,
+      operationKind: input.operationKind,
+      code: 'ADMISSION_EXECUTION_FAILED',
+      predicate: 'execution_failed'
+    }, options)
     return { ok: false, code: 'ADMISSION_EXECUTION_FAILED', message: error instanceof Error ? error.message : String(error) }
   }
 }

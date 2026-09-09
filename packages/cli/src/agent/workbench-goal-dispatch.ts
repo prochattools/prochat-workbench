@@ -6,6 +6,8 @@ import { scheduleWorkbenchPacket } from './workbench-packet-coordinator'
 import { getWorkbenchPacketResult } from './workbench-packet-results'
 import { preflightWorkbenchPacket, type WorkbenchGoalDispatch, type WorkbenchPacket, type WorkbenchPacketCommitPolicy, type WorkbenchPacketStep } from './workbench-packets'
 import { reserveWorkbenchPacket } from './workbench-packet-store'
+import { createFollowUpContext } from './workbench-follow-up-context'
+import type { WorkbenchGoalContext } from './agent-jobs'
 
 export const WORKBENCH_GOAL_DISPATCH_VERSION = 1 as const
 
@@ -51,6 +53,14 @@ function sha(value: unknown): string {
   return crypto.createHash('sha256').update(stable(value), 'utf8').digest('hex')
 }
 
+export function humanTerminalSummary(run: AgentJob, status: string): string {
+  const goal = boundedText(run.goal, 320) || 'the requested Workbench goal'
+  if (status === 'completed') return `Completed: ${goal}`
+  if (status === 'failed') return `Could not complete: ${goal}`
+  if (status === 'blocked') return `Blocked before completion: ${goal}`
+  return `Stopped: ${goal}`
+}
+
 function currentHead(sourceRoot: string): string {
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sourceRoot, encoding: 'utf8', timeout: 3_000, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 }
@@ -61,10 +71,21 @@ function compactTerminalResult(run: AgentJob, packetId: string, sourceId: string
   const changedFiles = result.changedPaths.slice(0, 12)
   const validation = result.validation.slice(0, 5).map(item => ({ commandKind: item.commandKind, status: item.status, exitCode: item.exitCode, durationMs: item.durationMs }))
   const commit = result.commitHash ? { hash: result.commitHash } : undefined
-  const warnings = result.errors.map(error => `${error.code}: ${error.message}`).slice(0, 5)
+  const warnings = result.errors.map(error => error.message).slice(0, 5)
+  const completedAt = Date.parse(run.updatedAt || run.createdAt || '')
+  const context = createFollowUpContext({
+    sourceId,
+    previousGoal: run.goal,
+    summary: humanTerminalSummary(run, result.status),
+    changedFiles,
+    validation,
+    explicitPaths: run.goalContext?.scope || run.goalContext?.knownFiles || [],
+    taskHistory: run.nextActions || [],
+    now: Number.isFinite(completedAt) ? completedAt : Date.now()
+  })
   return {
     status: result.status,
-    summary: run.summary,
+    summary: humanTerminalSummary(run, result.status),
     sourceId,
     changedFiles,
     reads: (result.readEvidence || []).slice(0, 5),
@@ -72,7 +93,16 @@ function compactTerminalResult(run: AgentJob, packetId: string, sourceId: string
     validation,
     ...(commit ? { commit } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
-    localExecutionMs: result.validation.reduce((total, item) => total + Math.max(0, item.durationMs || 0), 0)
+    localExecutionMs: result.validation.reduce((total, item) => total + Math.max(0, item.durationMs || 0), 0),
+    followUpContext: context,
+    diagnostics: {
+      runId: run.id,
+      packetId,
+      sourceId,
+      provider: 'local-goal-dispatch',
+      transport: 'local',
+      errorCodes: result.errors.map(error => error.code).slice(0, 5)
+    }
   }
 }
 
@@ -110,6 +140,7 @@ export function dispatchWorkbenchGoal(params: {
   documentationPath?: string
   maxIterations?: number
   dispatch: WorkbenchGoalDispatchInput
+  goalContext?: WorkbenchGoalContext
 }): WorkbenchGoalDispatchResult {
   const dispatch = normalizeDispatch(params.dispatch)
   const goal = boundedText(params.goal, 4_000)
@@ -123,7 +154,8 @@ export function dispatchWorkbenchGoal(params: {
     maxIterations: params.maxIterations,
     autoCommit: Boolean(commit?.enabled),
     autoPush: false,
-    autonomyLevel: 'hands_off_safe'
+    autonomyLevel: 'hands_off_safe',
+    goalContext: params.goalContext
   })
   const run = created.run
   const taskId = run.activeTaskId || `task-${sha({ runId: run.id, goal }).slice(0, 24)}`
